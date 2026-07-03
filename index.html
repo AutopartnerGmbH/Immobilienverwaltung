@@ -160,6 +160,23 @@
   .section-title:first-child{margin-top:0;}
 
   .helptext{font-size:11.5px;color:var(--muted);margin-top:4px;}
+  .vorgang-card{background:var(--surface);border:1px solid var(--border-soft);border-radius:8px;padding:14px 16px;margin-bottom:10px;box-shadow:var(--shadow);cursor:pointer;}
+  .vorgang-card:hover{border-color:var(--primary);}
+  .prio-hoch{color:var(--danger);font-weight:600;}
+  .prio-mittel{color:var(--warn);font-weight:600;}
+  .prio-niedrig{color:var(--muted);}
+  .checklist-item{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border-soft);}
+  .checklist-item.done .txt{text-decoration:line-through;color:var(--muted);}
+  .checklist-item input{width:auto;}
+  .dropzone{border:2px dashed var(--border);border-radius:10px;padding:28px;text-align:center;color:var(--muted);cursor:pointer;margin-bottom:18px;}
+  .dropzone:hover{border-color:var(--primary);color:var(--primary);}
+  .doc-row{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border-soft);font-size:13.5px;}
+  .doc-row:last-child{border-bottom:none;}
+  .vorlage-item{padding:10px 12px;border:1px solid var(--border-soft);border-radius:7px;margin-bottom:6px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;}
+  .vorlage-item:hover{border-color:var(--primary);background:var(--surface-2);}
+  .ab-summary{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border-soft);font-size:13.5px;}
+  .ab-summary.total{font-weight:600;border-top:2px solid var(--ink);border-bottom:none;padding-top:12px;margin-top:4px;}
+  .editable-amount{width:110px;text-align:right;padding:5px 8px;}
 </style>
 </head>
 <body>
@@ -173,9 +190,13 @@
     <div class="navitem active" data-page="dashboard"><span class="n">01</span> Dashboard</div>
     <div class="navitem" data-page="objekte"><span class="n">02</span> Objekte</div>
     <div class="navitem" data-page="mieter"><span class="n">03</span> Mieter &amp; Verträge</div>
-    <div class="navitem" data-page="zaehler"><span class="n">04</span> Zähler</div>
-    <div class="navitem" data-page="zahlungen"><span class="n">05</span> Zahlungsabgleich</div>
-    <div class="navitem" data-page="einstellungen"><span class="n">06</span> Einstellungen</div>
+    <div class="navitem" data-page="vorgaenge"><span class="n">04</span> Vorgänge</div>
+    <div class="navitem" data-page="zaehler"><span class="n">05</span> Zähler</div>
+    <div class="navitem" data-page="nebenkosten"><span class="n">06</span> Nebenkosten</div>
+    <div class="navitem" data-page="zahlungen"><span class="n">07</span> Zahlungsabgleich</div>
+    <div class="navitem" data-page="dokumente"><span class="n">08</span> Dokumente</div>
+    <div class="navitem" data-page="berichte"><span class="n">09</span> Berichte</div>
+    <div class="navitem" data-page="einstellungen"><span class="n">10</span> Einstellungen</div>
   </nav>
   <main id="main"></main>
 </div>
@@ -196,8 +217,8 @@
    Trage hier einmalig deine Supabase-Zugangsdaten ein.
    Projekt > Settings > API > "Project URL" und "anon public" Key
    ============================================================ */
-const SUPABASE_URL = "DEINE_SUPABASE_URL";
-const SUPABASE_ANON_KEY = "DEIN_SUPABASE_ANON_KEY";
+const SUPABASE_URL = "https://adtamsdadhtsoyvphjax.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkdGFtc2RhZGh0c295dnBoamF4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE0MTkyOTAsImV4cCI6MjA5Njk5NTI5MH0.H8XWreBTyL7WLYrpAWgl5A6CejM6sT-a244aEIVJgwk";
 
 let sb = null;
 let CONFIGURED = SUPABASE_URL.startsWith("http") && SUPABASE_ANON_KEY.length > 20;
@@ -220,13 +241,51 @@ let STATE = {
   zaehlerstaende: [],
   zahlungen: [],
   rechnungen: [],
+  vorgaenge: [],
+  vorgangTodos: [],
+  dokumente: [],
+  kommunikation: [],
+  abrechnungen: [],
+  abrechnungDetails: [],
   selectedObjektId: null,
+  selectedVorgangId: null,
+  selectedAbrechnungId: null,
+  vorgaengeFilter: 'offen',
+  dokumenteObjektFilter: '',
   csvRows: null,
   csvMapping: {}
 };
 
 const EINHEIT_TYPEN = ['Wohnung','Garage','Werbetafel'];
 const ZAEHLER_TYPEN = ['Heizung','Kaltwasser','Warmwasser','Strom','Sonstiges'];
+const KOMM_TYPEN = ['Anruf','E-Mail','Brief','Persönlich','Sonstiges'];
+const DOK_KATEGORIEN = ['Mietvertrag','Rechnung','Protokoll','Versicherung','Korrespondenz','Sonstiges'];
+
+/* Vorgangs-Vorlagen: fertige Checklisten für wiederkehrende Aufgaben */
+const VORGANG_VORLAGEN = [
+  {titel:'Mieterwechsel vorbereiten', kategorie:'Mieterwechsel', todos:[
+    'Kündigungsbestätigung an Mieter senden','Übergabetermin vereinbaren','Zählerstände bei Übergabe erfassen',
+    'Wohnung auf Mängel prüfen','Kaution abrechnen','Neuinserat vorbereiten','Schlüsselübergabe dokumentieren']},
+  {titel:'Mieterhöhung durchführen', kategorie:'Miete', todos:[
+    'Ortsübliche Vergleichsmiete prüfen','Fristen prüfen (Sperrfrist, Kappungsgrenze)','Erhöhungsschreiben erstellen',
+    'Schreiben versenden','Zustimmung/Fristablauf vermerken','Neue Miete ab Stichtag im Vertrag hinterlegen']},
+  {titel:'Nebenkostenabrechnung erstellen', kategorie:'Nebenkosten', todos:[
+    'Alle Rechnungen des Zeitraums erfassen','Zählerstände zum Stichtag ablesen','Verteilerschlüssel je Kostenart prüfen',
+    'Abrechnung berechnen und prüfen','Abrechnung an Mieter versenden','Nachzahlungen/Guthaben verbuchen']},
+  {titel:'Schadensmeldung bearbeiten', kategorie:'Instandhaltung', todos:[
+    'Schaden aufnehmen und dokumentieren','Dringlichkeit einschätzen','Handwerker beauftragen',
+    'Termin mit Mieter koordinieren','Rechnung prüfen und erfassen','Fall abschließen']},
+  {titel:'Vertragsende prüfen', kategorie:'Vertrag', todos:[
+    'Vertragsende im Kalender prüfen','Verlängerung oder Nachmieter klären','Kündigungsfristen beachten','Übergabetermin planen falls Auszug']},
+  {titel:'Kautionsabrechnung nach Auszug', kategorie:'Kaution', todos:[
+    'Übergabeprotokoll prüfen','Offene Forderungen gegenrechnen','Kautionsabrechnung erstellen','Restbetrag auszahlen','Abrechnung dokumentieren']},
+  {titel:'Neues Objekt einpflegen', kategorie:'Onboarding', todos:[
+    'Stammdaten erfassen','Einheiten anlegen','Zähler erfassen','Bestehende Verträge übertragen',
+    'Kostenarten für Objekt festlegen','Dokumente hochladen']},
+  {titel:'Zahlungsrückstand klären', kategorie:'Mahnwesen', todos:[
+    'Rückstand prüfen','Erste Zahlungserinnerung senden','Kontakt zum Mieter aufnehmen',
+    'Ratenzahlung anbieten falls sinnvoll','Mahnung erstellen falls keine Reaktion','Fall dokumentieren']}
+];
 
 /* ============================================================
    INIT / DATA LOADING
@@ -234,7 +293,7 @@ const ZAEHLER_TYPEN = ['Heizung','Kaltwasser','Warmwasser','Strom','Sonstiges'];
 async function loadAll(){
   if(!CONFIGURED) return renderPage();
   try{
-    const [ob, ei, mi, ve, ka, ok, za, zs, zh, re] = await Promise.all([
+    const [ob, ei, mi, ve, ka, ok, za, zs, zh, re, vo, vt, dk, km, ab, ad] = await Promise.all([
       sb.from('objekte').select('*').order('name'),
       sb.from('einheiten').select('*').order('bezeichnung'),
       sb.from('mieter').select('*').order('nachname'),
@@ -245,6 +304,12 @@ async function loadAll(){
       sb.from('zaehlerstaende').select('*').order('datum',{ascending:false}),
       sb.from('zahlungen').select('*').order('datum',{ascending:false}),
       sb.from('rechnungen').select('*').order('rechnungsdatum',{ascending:false}),
+      sb.from('vorgaenge').select('*').order('erstellt_am',{ascending:false}),
+      sb.from('vorgang_todos').select('*').order('reihenfolge'),
+      sb.from('dokumente').select('*').order('hochgeladen_am',{ascending:false}),
+      sb.from('kommunikation').select('*').order('datum',{ascending:false}),
+      sb.from('abrechnungen').select('*').order('erstellt_am',{ascending:false}),
+      sb.from('abrechnung_details').select('*'),
     ]);
     STATE.objekte = ob.data||[];
     STATE.einheiten = ei.data||[];
@@ -256,6 +321,12 @@ async function loadAll(){
     STATE.zaehlerstaende = zs.data||[];
     STATE.zahlungen = zh.data||[];
     STATE.rechnungen = re.data||[];
+    STATE.vorgaenge = vo.data||[];
+    STATE.vorgangTodos = vt.data||[];
+    STATE.dokumente = dk.data||[];
+    STATE.kommunikation = km.data||[];
+    STATE.abrechnungen = ab.data||[];
+    STATE.abrechnungDetails = ad.data||[];
   }catch(e){
     showToast('Fehler beim Laden: '+e.message, true);
   }
@@ -330,8 +401,12 @@ function renderPage(){
     case 'dashboard': main.innerHTML = renderDashboard(); break;
     case 'objekte': main.innerHTML = renderObjekte(); break;
     case 'mieter': main.innerHTML = renderMieter(); break;
+    case 'vorgaenge': main.innerHTML = renderVorgaenge(); break;
     case 'zaehler': main.innerHTML = renderZaehler(); break;
+    case 'nebenkosten': main.innerHTML = renderNebenkosten(); break;
     case 'zahlungen': main.innerHTML = renderZahlungen(); break;
+    case 'dokumente': main.innerHTML = renderDokumente(); break;
+    case 'berichte': main.innerHTML = renderBerichte(); break;
     case 'einstellungen': main.innerHTML = renderEinstellungen(); break;
   }
 }
@@ -346,6 +421,7 @@ function renderConfigNotice(){
       <li>Im SQL-Editor die mitgelieferte <code>schema.sql</code> ausführen (legt alle Tabellen an)</li>
       <li>Unter <b>Project Settings → API</b> die <b>Project URL</b> und den <b>anon public key</b> kopieren</li>
       <li>Im HTML-Quelltext dieser Datei ganz oben im Script-Block <code>SUPABASE_URL</code> und <code>SUPABASE_ANON_KEY</code> eintragen</li>
+      <li>Für Dokument-Uploads: <code>schema_erweiterung.sql</code> legt automatisch auch den Storage-Bucket <code>dokumente</code> an</li>
       <li>Datei speichern und neu öffnen</li>
     </ol>
   </div>`;
@@ -370,6 +446,7 @@ function renderDashboard(){
   const auslaufend = STATE.vertraege.filter(v=>v.status==='aktiv' && v.ende_datum && new Date(v.ende_datum)<=in60 && new Date(v.ende_datum)>=heuteD);
 
   const sollMieteGesamt = aktiveVertraege().reduce((s,v)=>s+Number(v.kaltmiete||0)+Number(v.nk_vorauszahlung||0),0);
+  const offeneVorgaenge = STATE.vorgaenge.filter(v=>v.status!=='erledigt');
 
   return `
   <div class="pagehead">
@@ -413,6 +490,15 @@ function renderDashboard(){
         <div style="padding:12px 22px;border-bottom:1px solid var(--border-soft);display:flex;justify-content:space-between;">
           <div><b>${esc(mieterName(v.mieter_id))}</b><div style="color:var(--muted);font-size:12px;">${esc(einheitLabel(v.einheit_id))}</div></div>
           <div class="badge badge-warn">bis ${fmtDate(v.ende_datum)}</div>
+        </div>`).join('')}
+      </div>
+      <div class="card-pad" style="border-top:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);"><h3 style="font-size:15px;">Offene Vorgänge</h3></div>
+      <div style="padding:6px 0;">
+      ${offeneVorgaenge.length===0? `<div class="empty">Keine offenen Vorgänge</div>` :
+        offeneVorgaenge.slice(0,6).map(v=>`
+        <div class="rowhover" style="padding:10px 22px;border-bottom:1px solid var(--border-soft);display:flex;justify-content:space-between;cursor:pointer;" onclick="go('vorgaenge');">
+          <span>${esc(v.titel)}</span>
+          <span class="prio-${v.prioritaet}">${v.prioritaet}</span>
         </div>`).join('')}
       </div>
     </div>
@@ -738,7 +824,12 @@ function openVertragForm(id){
         <option value="beendet" ${v.status==='beendet'?'selected':''}>beendet</option>
       </select>
     </div>
-    <div class="field"><label>Miete fällig bis zum ... Tag des Monats</label><input id="f-ziel" type="number" min="1" max="28" value="${v.zahlungsziel_tag||3}"></div>
+    <div class="field-row">
+      <div class="field"><label>Miete fällig bis zum ... Tag des Monats</label><input id="f-ziel" type="number" min="1" max="28" value="${v.zahlungsziel_tag||3}"></div>
+      <div class="field"><label>Personenzahl im Haushalt</label><input id="f-personen" type="number" min="1" value="${v.personenzahl||1}">
+        <div class="helptext">Für Verteilerschlüssel "nach Personen"</div>
+      </div>
+    </div>
     <div class="field"><label>Sondervereinbarungen (individuelle Absprachen mit diesem Mieter)</label>
       <textarea id="f-sonder" placeholder="z.B. zahlt keine Müllgebühr, hat eigenen Entsorgervertrag / Pauschale statt Abrechnung...">${esc(v.sondervereinbarungen||'')}</textarea>
       <div class="helptext">Wird bei der Nebenkostenabrechnung berücksichtigt.</div>
@@ -758,6 +849,7 @@ async function saveVertrag(id){
     kaution: document.getElementById('f-kaution').value? Number(document.getElementById('f-kaution').value): null,
     status: document.getElementById('f-status').value,
     zahlungsziel_tag: Number(document.getElementById('f-ziel').value)||3,
+    personenzahl: Number(document.getElementById('f-personen').value)||1,
     sondervereinbarungen: document.getElementById('f-sonder').value.trim(),
   };
   if(!obj.einheit_id || !obj.mieter_id){ showToast('Bitte Einheit und Mieter wählen', true); return; }
@@ -770,6 +862,208 @@ async function deleteVertrag(id){
   await dbDelete('vertraege', id);
   STATE.vertraege = STATE.vertraege.filter(x=>x.id!==id);
   showToast('Vertrag gelöscht'); renderPage();
+}
+
+/* ============================================================
+   VORGÄNGE
+   ============================================================ */
+function renderVorgaenge(){
+  if(STATE.selectedVorgangId){ return renderVorgangDetail(STATE.selectedVorgangId); }
+  const gruppen = {offen:[], in_arbeit:[], erledigt:[]};
+  STATE.vorgaenge.forEach(v=>{ (gruppen[v.status]||gruppen.offen).push(v); });
+
+  const spalte = (titel, key, badgeClass) => `
+    <div class="card" style="flex:1;min-width:0;">
+      <div class="card-pad" style="border-bottom:1px solid var(--border-soft);display:flex;justify-content:space-between;align-items:center;">
+        <h3 style="font-size:15px;">${titel}</h3><span class="badge ${badgeClass}">${gruppen[key].length}</span>
+      </div>
+      <div style="padding:12px;">
+        ${gruppen[key].length===0? `<div class="empty" style="padding:20px;">Keine Vorgänge</div>` :
+          gruppen[key].map(v=>{
+            const todos = STATE.vorgangTodos.filter(t=>t.vorgang_id===v.id);
+            const done = todos.filter(t=>t.erledigt).length;
+            return `
+            <div class="vorgang-card" onclick="openVorgangDetail('${v.id}')">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                <b>${esc(v.titel)}</b>
+                <span class="prio-${v.prioritaet}">${v.prioritaet}</span>
+              </div>
+              <div style="color:var(--muted);font-size:12px;margin-top:4px;">
+                ${v.kategorie?esc(v.kategorie)+' · ':''}${v.objekt_id?esc(objektName(v.objekt_id)):''}
+              </div>
+              ${todos.length? `<div class="helptext" style="margin-top:6px;">${done}/${todos.length} Schritte erledigt</div>`:''}
+              ${v.faelligkeit? `<div class="helptext" style="margin-top:2px;">fällig ${fmtDate(v.faelligkeit)}</div>`:''}
+            </div>`;
+          }).join('')}
+      </div>
+    </div>`;
+
+  return `
+  <div class="pagehead">
+    <div><h1>Vorgänge</h1><div class="desc">Aufgaben und Checklisten für wiederkehrende Abläufe</div></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn-outline" onclick="openVorlagenModal()">+ Aus Vorlage</button>
+      <button class="btn-primary" onclick="openVorgangForm()">+ Neuer Vorgang</button>
+    </div>
+  </div>
+  <div style="display:flex;gap:16px;align-items:flex-start;">
+    ${spalte('Offen','offen','badge-muted')}
+    ${spalte('In Arbeit','in_arbeit','badge-warn')}
+    ${spalte('Erledigt','erledigt','badge-ok')}
+  </div>
+  `;
+}
+
+function openVorgangDetail(id){ STATE.selectedVorgangId = id; renderPage(); }
+
+function renderVorgangDetail(id){
+  const v = STATE.vorgaenge.find(x=>x.id===id);
+  if(!v){ STATE.selectedVorgangId=null; return renderVorgaenge(); }
+  const todos = STATE.vorgangTodos.filter(t=>t.vorgang_id===v.id).sort((a,b)=>(a.reihenfolge||0)-(b.reihenfolge||0));
+  return `
+  <div class="breadcrumb"><span onclick="STATE.selectedVorgangId=null; renderPage();">← Alle Vorgänge</span></div>
+  <div class="pagehead">
+    <div><h1>${esc(v.titel)}</h1><div class="desc">${v.kategorie?esc(v.kategorie)+' · ':''}${v.objekt_id?esc(objektName(v.objekt_id)):'kein Objekt zugeordnet'}</div></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn-outline" onclick="openVorgangForm('${v.id}')">Bearbeiten</button>
+      <button class="btn-danger" onclick="deleteVorgang('${v.id}')">Löschen</button>
+    </div>
+  </div>
+  <div class="grid" style="grid-template-columns:1fr 300px;align-items:start;">
+    <div class="card card-pad">
+      <div class="section-title">Checkliste</div>
+      ${todos.length===0? `<div class="empty">Noch keine Schritte. Füge unten welche hinzu.</div>` :
+        todos.map(t=>`
+        <div class="checklist-item ${t.erledigt?'done':''}">
+          <input type="checkbox" ${t.erledigt?'checked':''} onchange="toggleTodo('${t.id}', this.checked)">
+          <span class="txt" style="flex:1;">${esc(t.text)}</span>
+          <button class="btn-ghost btn-sm" onclick="deleteTodo('${t.id}')">×</button>
+        </div>`).join('')}
+      <div style="display:flex;gap:8px;margin-top:14px;">
+        <input id="new-todo-text" placeholder="Neuer Schritt..." onkeydown="if(event.key==='Enter') addTodo('${v.id}')">
+        <button class="btn-outline btn-sm" onclick="addTodo('${v.id}')">Hinzufügen</button>
+      </div>
+      ${v.notizen? `<div class="section-title">Notizen</div><div>${esc(v.notizen)}</div>`:''}
+    </div>
+    <div class="card card-pad">
+      <div class="section-title">Details</div>
+      <div style="font-size:13px;line-height:2;">
+        <div><b>Status:</b> ${v.status.replace('_',' ')}</div>
+        <div><b>Priorität:</b> <span class="prio-${v.prioritaet}">${v.prioritaet}</span></div>
+        <div><b>Fällig:</b> ${v.faelligkeit?fmtDate(v.faelligkeit):'–'}</div>
+        <div><b>Objekt:</b> ${v.objekt_id?esc(objektName(v.objekt_id)):'–'}</div>
+      </div>
+      <div class="field" style="margin-top:14px;">
+        <label>Status ändern</label>
+        <select onchange="setVorgangStatus('${v.id}', this.value)">
+          <option value="offen" ${v.status==='offen'?'selected':''}>offen</option>
+          <option value="in_arbeit" ${v.status==='in_arbeit'?'selected':''}>in Arbeit</option>
+          <option value="erledigt" ${v.status==='erledigt'?'selected':''}>erledigt</option>
+        </select>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function toggleTodo(id, erledigt){
+  await dbUpdate('vorgang_todos', id, {erledigt});
+  STATE.vorgangTodos.find(t=>t.id===id).erledigt = erledigt;
+  renderPage();
+}
+async function addTodo(vorgangId){
+  const input = document.getElementById('new-todo-text');
+  const text = input.value.trim();
+  if(!text) return;
+  const maxOrder = Math.max(0, ...STATE.vorgangTodos.filter(t=>t.vorgang_id===vorgangId).map(t=>t.reihenfolge||0));
+  const row = await dbInsert('vorgang_todos', {vorgang_id:vorgangId, text, erledigt:false, reihenfolge:maxOrder+1});
+  STATE.vorgangTodos.push(row);
+  renderPage();
+}
+async function deleteTodo(id){
+  await dbDelete('vorgang_todos', id);
+  STATE.vorgangTodos = STATE.vorgangTodos.filter(x=>x.id!==id);
+  renderPage();
+}
+async function setVorgangStatus(id, status){
+  await dbUpdate('vorgaenge', id, {status});
+  STATE.vorgaenge.find(v=>v.id===id).status = status;
+  showToast('Status aktualisiert'); renderPage();
+}
+
+function openVorgangForm(id){
+  const v = id? STATE.vorgaenge.find(x=>x.id===id) : {};
+  const objektOpts = `<option value="">– kein Objekt –</option>` + STATE.objekte.map(o=>`<option value="${o.id}" ${v.objekt_id===o.id?'selected':''}>${esc(o.name)}</option>`).join('');
+  const body = `
+    <div class="field"><label>Titel</label><input id="f-titel" value="${esc(v.titel||'')}"></div>
+    <div class="field-row">
+      <div class="field"><label>Kategorie</label><input id="f-kategorie" value="${esc(v.kategorie||'')}" placeholder="z.B. Instandhaltung"></div>
+      <div class="field"><label>Objekt (optional)</label><select id="f-objekt-v">${objektOpts}</select></div>
+    </div>
+    <div class="field-row-3">
+      <div class="field"><label>Priorität</label>
+        <select id="f-prio">
+          <option value="hoch" ${v.prioritaet==='hoch'?'selected':''}>hoch</option>
+          <option value="mittel" ${!v.prioritaet||v.prioritaet==='mittel'?'selected':''}>mittel</option>
+          <option value="niedrig" ${v.prioritaet==='niedrig'?'selected':''}>niedrig</option>
+        </select>
+      </div>
+      <div class="field"><label>Status</label>
+        <select id="f-status-v">
+          <option value="offen" ${!v.status||v.status==='offen'?'selected':''}>offen</option>
+          <option value="in_arbeit" ${v.status==='in_arbeit'?'selected':''}>in Arbeit</option>
+          <option value="erledigt" ${v.status==='erledigt'?'selected':''}>erledigt</option>
+        </select>
+      </div>
+      <div class="field"><label>Fällig am</label><input id="f-faellig" type="date" value="${v.faelligkeit||''}"></div>
+    </div>
+    <div class="field"><label>Notizen</label><textarea id="f-vnotiz">${esc(v.notizen||'')}</textarea></div>
+  `;
+  const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="saveVorgang('${id||''}')">Speichern</button>`;
+  openModal(id?'Vorgang bearbeiten':'Neuer Vorgang', body, foot);
+}
+async function saveVorgang(id){
+  const obj = {
+    titel: document.getElementById('f-titel').value.trim(),
+    kategorie: document.getElementById('f-kategorie').value.trim(),
+    objekt_id: document.getElementById('f-objekt-v').value || null,
+    prioritaet: document.getElementById('f-prio').value,
+    status: document.getElementById('f-status-v').value,
+    faelligkeit: document.getElementById('f-faellig').value || null,
+    notizen: document.getElementById('f-vnotiz').value.trim(),
+  };
+  if(!obj.titel){ showToast('Bitte einen Titel eingeben', true); return; }
+  if(id){ await dbUpdate('vorgaenge', id, obj); Object.assign(STATE.vorgaenge.find(x=>x.id===id), obj); }
+  else{ const row = await dbInsert('vorgaenge', obj); STATE.vorgaenge.push(row); }
+  closeModal(); showToast('Vorgang gespeichert'); renderPage();
+}
+async function deleteVorgang(id){
+  if(!confirm('Vorgang inkl. Checkliste wirklich löschen?')) return;
+  await dbDelete('vorgaenge', id);
+  STATE.vorgaenge = STATE.vorgaenge.filter(x=>x.id!==id);
+  STATE.vorgangTodos = STATE.vorgangTodos.filter(x=>x.vorgang_id!==id);
+  STATE.selectedVorgangId = null;
+  showToast('Vorgang gelöscht'); renderPage();
+}
+
+function openVorlagenModal(){
+  const body = VORGANG_VORLAGEN.map((t,i)=>`
+    <div class="vorlage-item" onclick="createFromVorlage(${i})">
+      <div><b>${esc(t.titel)}</b><div class="helptext">${esc(t.kategorie)} · ${t.todos.length} Schritte</div></div>
+      <span>→</span>
+    </div>`).join('');
+  openModal('Vorgang aus Vorlage erstellen', body, `<button class="btn-outline" onclick="closeModal()">Abbrechen</button>`);
+}
+async function createFromVorlage(index){
+  const t = VORGANG_VORLAGEN[index];
+  const vorgang = await dbInsert('vorgaenge', {titel:t.titel, kategorie:t.kategorie, prioritaet:'mittel', status:'offen'});
+  STATE.vorgaenge.unshift(vorgang);
+  for(let i=0;i<t.todos.length;i++){
+    const row = await dbInsert('vorgang_todos', {vorgang_id:vorgang.id, text:t.todos[i], erledigt:false, reihenfolge:i});
+    STATE.vorgangTodos.push(row);
+  }
+  closeModal(); showToast('Vorgang aus Vorlage erstellt');
+  STATE.selectedVorgangId = vorgang.id;
+  go('vorgaenge');
 }
 
 /* ============================================================
@@ -897,11 +1191,260 @@ async function saveZaehlerstand(zaehlerId){
 }
 
 /* ============================================================
+   NEBENKOSTEN
+   ============================================================ */
+function round2(n){ return Math.round(n*100)/100; }
+
+function overlapDays(vStart, vEnd, pStart, pEnd){
+  const s = new Date(Math.max(new Date(vStart), new Date(pStart)));
+  const eV = vEnd? new Date(vEnd) : new Date(pEnd);
+  const e = new Date(Math.min(eV.getTime(), new Date(pEnd).getTime()));
+  if(e<s) return 0;
+  return Math.round((e-s)/(1000*60*60*24))+1;
+}
+
+function kostenartZaehlerTyp(name){
+  const n = (name||'').toLowerCase();
+  if(n.includes('heizung')) return 'Heizung';
+  if(n.includes('warmwasser')) return 'Warmwasser';
+  if(n.includes('kaltwasser')) return 'Kaltwasser';
+  if(n.includes('wasser')) return 'Kaltwasser';
+  if(n.includes('strom')) return 'Strom';
+  return null;
+}
+
+function einheitVerbrauch(einheitId, typ, von, bis){
+  const zl = STATE.zaehler.filter(z=>z.einheit_id===einheitId && z.typ===typ);
+  if(zl.length===0) return null;
+  let total = 0, any=false;
+  for(const z of zl){
+    const staende = STATE.zaehlerstaende.filter(s=>s.zaehler_id===z.id).sort((a,b)=>a.datum.localeCompare(b.datum));
+    const vor = [...staende].reverse().find(s=>s.datum<=von);
+    const nachKandidaten = staende.filter(s=>s.datum<=bis);
+    const nach = nachKandidaten.length? nachKandidaten[nachKandidaten.length-1] : null;
+    if(vor && nach && nach.stand>=vor.stand){ total += (nach.stand-vor.stand); any=true; }
+    else if(nach && !vor){ total += nach.stand; any=true; }
+  }
+  return any? total : null;
+}
+
+async function generateAbrechnung(objektId, von, bis){
+  if(!objektId || !von || !bis){ showToast('Bitte Objekt und Zeitraum wählen', true); return; }
+  const objekt = STATE.objekte.find(o=>o.id===objektId);
+  const einheitenObjekt = STATE.einheiten.filter(e=>e.objekt_id===objektId && e.typ==='Wohnung');
+
+  let anteile = [];
+  for(const e of einheitenObjekt){
+    const vertraegeEinheit = STATE.vertraege.filter(v=>v.einheit_id===e.id);
+    for(const v of vertraegeEinheit){
+      const tage = overlapDays(v.beginn_datum, v.ende_datum, von, bis);
+      if(tage>0) anteile.push({vertrag:v, einheit:e, tage});
+    }
+  }
+  if(anteile.length===0){ showToast('Keine Verträge im gewählten Zeitraum für dieses Objekt gefunden', true); return; }
+
+  const gesamtM2Tage = anteile.reduce((s,a)=>s+(Number(a.einheit.wohnflaeche_m2||0)*a.tage),0);
+  const gesamtPersonenTage = anteile.reduce((s,a)=>s+(Number(a.vertrag.personenzahl||1)*a.tage),0);
+
+  const aktiveKa = STATE.kostenarten.filter(k=>{
+    const ok = STATE.objektKostenarten.find(x=>x.objekt_id===objektId && x.kostenart_id===k.id);
+    return ok? ok.aktiv : true;
+  });
+
+  const abrechnung = await dbInsert('abrechnungen', {objekt_id:objektId, zeitraum_von:von, zeitraum_bis:bis, status:'entwurf'});
+  STATE.abrechnungen.unshift(abrechnung);
+
+  const neueDetails = [];
+  const m2Anteil = (a)=> gesamtM2Tage>0? (Number(a.einheit.wohnflaeche_m2||0)*a.tage)/gesamtM2Tage : 1/anteile.length;
+  const personenAnteil = (a)=> gesamtPersonenTage>0? (Number(a.vertrag.personenzahl||1)*a.tage)/gesamtPersonenTage : 1/anteile.length;
+
+  for(const k of aktiveKa){
+    const ok = STATE.objektKostenarten.find(x=>x.objekt_id===objektId && x.kostenart_id===k.id);
+    const schluessel = ok?.verteilerschluessel_override || k.standard_verteilerschluessel;
+    const rechnungenKa = STATE.rechnungen.filter(r=>r.objekt_id===objektId && r.kostenart_id===k.id &&
+      r.leistungszeitraum_von && r.leistungszeitraum_bis && r.leistungszeitraum_von<=bis && r.leistungszeitraum_bis>=von);
+    const gesamtBetrag = rechnungenKa.reduce((s,r)=>s+Number(r.betrag||0),0);
+    if(gesamtBetrag<=0) continue;
+
+    if(k.ist_heizkosten){
+      const verbrauchAnteil = (objekt.heizkosten_verbrauch_anteil||70)/100;
+      const flaechenAnteil = 1-verbrauchAnteil;
+      const betragVerbrauch = gesamtBetrag*verbrauchAnteil;
+      const betragFlaeche = gesamtBetrag*flaechenAnteil;
+      const zTyp = kostenartZaehlerTyp(k.name) || 'Heizung';
+      const verbraeuche = anteile.map(a=>({a, v: einheitVerbrauch(a.einheit.id, zTyp, von, bis)}));
+      const gesamtVerbrauch = verbraeuche.reduce((s,x)=>s+(x.v||0),0);
+      for(const {a,v} of verbraeuche){
+        let betrag = 0, beschr;
+        if(gesamtVerbrauch>0 && v!=null){ betrag += betragVerbrauch*(v/gesamtVerbrauch); beschr = `${v} Verbrauchseinh.`; }
+        else { betrag += betragVerbrauch*m2Anteil(a); beschr = 'kein Zähler erfasst, nach Fläche'; }
+        betrag += betragFlaeche*m2Anteil(a);
+        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(betrag),
+          anteil_beschreibung:`${beschr} (${objekt.heizkosten_verbrauch_anteil}% Verbr. / ${100-objekt.heizkosten_verbrauch_anteil}% Fläche)`, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
+      }
+    } else if(schluessel==='personen'){
+      for(const a of anteile){
+        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(gesamtBetrag*personenAnteil(a)),
+          anteil_beschreibung:`${a.vertrag.personenzahl||1} Pers. · ${a.tage} Tage`, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
+      }
+    } else if(schluessel==='verbrauch'){
+      const zTyp = kostenartZaehlerTyp(k.name);
+      const verbraeuche = anteile.map(a=>({a, v: zTyp? einheitVerbrauch(a.einheit.id, zTyp, von, bis): null}));
+      const gesamtVerbrauch = verbraeuche.reduce((s,x)=>s+(x.v||0),0);
+      for(const {a,v} of verbraeuche){
+        let betrag, beschr;
+        if(gesamtVerbrauch>0 && v!=null){ betrag = gesamtBetrag*(v/gesamtVerbrauch); beschr = `${v} Verbrauchseinh.`; }
+        else { betrag = gesamtBetrag*m2Anteil(a); beschr = 'kein Zähler erfasst, nach Fläche'; }
+        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(betrag),
+          anteil_beschreibung:beschr, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
+      }
+    } else if(schluessel==='individuell'){
+      // Ohne klaren Schlüssel: Verteilung nach Nutzungstagen der Einheit im Zeitraum (fairer als pauschal nach Fläche, z.B. bei einmaligen Reparaturen)
+      const gesamtTage = anteile.reduce((s,a)=>s+a.tage,0);
+      for(const a of anteile){
+        const anteil = gesamtTage>0? a.tage/gesamtTage : 1/anteile.length;
+        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(gesamtBetrag*anteil),
+          anteil_beschreibung:`${a.tage} Nutzungstage · bitte prüfen/anpassen`, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
+      }
+    } else { // m2 (Standard)
+      for(const a of anteile){
+        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(gesamtBetrag*m2Anteil(a)),
+          anteil_beschreibung: `${a.einheit.wohnflaeche_m2||0} m² · ${a.tage} Tage`,
+          ist_vorauszahlung:false, ist_ergebnis_zeile:false});
+      }
+    }
+  }
+
+  for(const a of anteile){
+    const monate = a.tage/30.44;
+    const vz = Number(a.vertrag.nk_vorauszahlung||0)*monate;
+    neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:null, betrag:round2(-vz),
+      anteil_beschreibung:`${monate.toFixed(1)} Monate NK-Vorauszahlung (Näherung)`, ist_vorauszahlung:true, ist_ergebnis_zeile:false});
+  }
+
+  for(const d of neueDetails){ const row = await dbInsert('abrechnung_details', d); STATE.abrechnungDetails.push(row); }
+
+  closeModal();
+  showToast('Abrechnung erstellt – bitte prüfen');
+  STATE.selectedAbrechnungId = abrechnung.id;
+  renderPage();
+}
+
+function renderNebenkosten(){
+  if(STATE.selectedAbrechnungId){ return renderAbrechnungDetail(STATE.selectedAbrechnungId); }
+  return `
+  <div class="pagehead">
+    <div><h1>Nebenkosten</h1><div class="desc">Nebenkostenabrechnungen je Objekt und Zeitraum erstellen</div></div>
+    <button class="btn-primary" onclick="openAbrechnungForm()">+ Neue Abrechnung</button>
+  </div>
+  <div class="card">
+    <table>
+      <thead><tr><th>Objekt</th><th>Zeitraum</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+      ${STATE.abrechnungen.length===0? `<tr><td colspan="4" class="empty">Noch keine Abrechnung erstellt</td></tr>` :
+        STATE.abrechnungen.map(a=>`
+        <tr class="rowhover" style="cursor:pointer;" onclick="STATE.selectedAbrechnungId='${a.id}'; renderPage();">
+          <td><b>${esc(objektName(a.objekt_id))}</b></td>
+          <td>${fmtDate(a.zeitraum_von)} – ${fmtDate(a.zeitraum_bis)}</td>
+          <td><span class="badge ${a.status==='versendet'?'badge-ok':a.status==='fertig'?'badge-warn':'badge-muted'}">${a.status}</span></td>
+          <td style="text-align:right;"><button class="btn-danger btn-sm" onclick="event.stopPropagation(); deleteAbrechnung('${a.id}')">Löschen</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function openAbrechnungForm(){
+  const objektOpts = STATE.objekte.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('');
+  const jahr = new Date().getFullYear()-1;
+  const body = `
+    <div class="field"><label>Objekt</label><select id="f-ab-objekt">${objektOpts||'<option>Erst Objekt anlegen</option>'}</select></div>
+    <div class="field-row">
+      <div class="field"><label>Zeitraum von</label><input id="f-ab-von" type="date" value="${jahr}-01-01"></div>
+      <div class="field"><label>Zeitraum bis</label><input id="f-ab-bis" type="date" value="${jahr}-12-31"></div>
+    </div>
+    <div class="helptext">Berechnet automatisch anhand erfasster Rechnungen, Zählerstände und Verträge im Zeitraum. Alle Werte kannst du danach noch prüfen und anpassen.</div>
+  `;
+  const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="generateAbrechnung(document.getElementById('f-ab-objekt').value, document.getElementById('f-ab-von').value, document.getElementById('f-ab-bis').value)">Berechnen</button>`;
+  openModal('Neue Nebenkostenabrechnung', body, foot);
+}
+
+async function deleteAbrechnung(id){
+  if(!confirm('Abrechnung wirklich löschen?')) return;
+  await dbDelete('abrechnungen', id);
+  STATE.abrechnungen = STATE.abrechnungen.filter(x=>x.id!==id);
+  STATE.abrechnungDetails = STATE.abrechnungDetails.filter(x=>x.abrechnung_id!==id);
+  showToast('Abrechnung gelöscht'); renderPage();
+}
+
+function renderAbrechnungDetail(id){
+  const a = STATE.abrechnungen.find(x=>x.id===id);
+  if(!a){ STATE.selectedAbrechnungId=null; return renderNebenkosten(); }
+  const details = STATE.abrechnungDetails.filter(d=>d.abrechnung_id===id);
+  const vertragIds = [...new Set(details.map(d=>d.vertrag_id))];
+  return `
+  <div class="breadcrumb"><span onclick="STATE.selectedAbrechnungId=null; renderPage();">← Alle Abrechnungen</span></div>
+  <div class="pagehead">
+    <div><h1>${esc(objektName(a.objekt_id))}</h1><div class="desc">Abrechnungszeitraum ${fmtDate(a.zeitraum_von)} – ${fmtDate(a.zeitraum_bis)}</div></div>
+    <div style="display:flex;gap:8px;">
+      <select onchange="setAbrechnungStatus('${a.id}', this.value)">
+        <option value="entwurf" ${a.status==='entwurf'?'selected':''}>Entwurf</option>
+        <option value="fertig" ${a.status==='fertig'?'selected':''}>Fertig</option>
+        <option value="versendet" ${a.status==='versendet'?'selected':''}>Versendet</option>
+      </select>
+      <button class="btn-outline" onclick="window.print()">Drucken / PDF</button>
+    </div>
+  </div>
+  ${vertragIds.map(vid=>{
+    const v = STATE.vertraege.find(x=>x.id===vid);
+    const rows = details.filter(d=>d.vertrag_id===vid);
+    const kostenRows = rows.filter(r=>!r.ist_vorauszahlung);
+    const vzRows = rows.filter(r=>r.ist_vorauszahlung);
+    const summeKosten = kostenRows.reduce((s,r)=>s+Number(r.betrag),0);
+    const summeVz = vzRows.reduce((s,r)=>s+Number(r.betrag),0);
+    const ergebnis = summeKosten + summeVz;
+    return `
+    <div class="card" style="margin-bottom:20px;">
+      <div class="card-pad" style="border-bottom:1px solid var(--border-soft);">
+        <b>${esc(mieterName(v?.mieter_id))}</b><div class="helptext">${esc(einheitLabel(v?.einheit_id))}</div>
+      </div>
+      <div class="card-pad">
+        ${kostenRows.map(r=>{
+          const k = STATE.kostenarten.find(x=>x.id===r.kostenart_id);
+          return `<div class="ab-summary">
+            <span>${esc(k?.name||'Kostenart')} <span class="helptext">(${esc(r.anteil_beschreibung||'')})</span></span>
+            <input class="editable-amount mono" type="number" step="0.01" value="${r.betrag}" onchange="updateDetailBetrag('${r.id}', this.value)">
+          </div>`;
+        }).join('')}
+        <div class="ab-summary"><span>Summe Kosten</span><b>${fmtMoney(summeKosten)}</b></div>
+        ${vzRows.map(r=>`<div class="ab-summary"><span>${esc(r.anteil_beschreibung||'Vorauszahlung')}</span>
+          <input class="editable-amount mono" type="number" step="0.01" value="${r.betrag}" onchange="updateDetailBetrag('${r.id}', this.value)"></div>`).join('')}
+        <div class="ab-summary total"><span>${ergebnis>=0?'Nachzahlung':'Guthaben'}</span><span>${fmtMoney(Math.abs(ergebnis))}</span></div>
+        ${v?.sondervereinbarungen? `<div class="helptext" style="margin-top:10px;">⚠ Sondervereinbarung beachten: ${esc(v.sondervereinbarungen)}</div>`:''}
+      </div>
+    </div>`;
+  }).join('')}
+  `;
+}
+
+async function updateDetailBetrag(id, value){
+  const betrag = Number(value)||0;
+  await dbUpdate('abrechnung_details', id, {betrag});
+  STATE.abrechnungDetails.find(d=>d.id===id).betrag = betrag;
+}
+async function setAbrechnungStatus(id, status){
+  await dbUpdate('abrechnungen', id, {status});
+  STATE.abrechnungen.find(a=>a.id===id).status = status;
+  showToast('Status aktualisiert');
+}
+
+/* ============================================================
    ZAHLUNGSABGLEICH
    ============================================================ */
 function renderZahlungen(){
   const offen = STATE.zahlungen.filter(z=>z.status==='offen');
   const zugeordnet = STATE.zahlungen.filter(z=>z.status==='zugeordnet');
+  const ignoriert = STATE.zahlungen.filter(z=>z.status==='ignoriert');
 
   return `
   <div class="pagehead">
@@ -914,9 +1457,9 @@ function renderZahlungen(){
   <div class="section-title">Offene Zahlungen (${offen.length})</div>
   <div class="card" style="margin-bottom:24px;">
     <table>
-      <thead><tr><th>Datum</th><th>Betrag</th><th>Verwendungszweck</th><th>Absender</th><th>Zuordnen</th></tr></thead>
+      <thead><tr><th>Datum</th><th>Betrag</th><th>Verwendungszweck</th><th>Absender</th><th>Zuordnen</th><th></th></tr></thead>
       <tbody>
-      ${offen.length===0? `<tr><td colspan="5" class="empty">Keine offenen Zahlungen – alles zugeordnet oder noch nichts importiert</td></tr>` :
+      ${offen.length===0? `<tr><td colspan="6" class="empty">Keine offenen Zahlungen – alles zugeordnet oder noch nichts importiert</td></tr>` :
         offen.map(z=>`
         <tr class="rowhover">
           <td>${fmtDate(z.datum)}</td>
@@ -929,6 +1472,7 @@ function renderZahlungen(){
               ${aktiveVertraege().map(v=>`<option value="${v.id}">${esc(mieterName(v.mieter_id))} · ${esc(einheitLabel(v.einheit_id))}</option>`).join('')}
             </select>
           </td>
+          <td><button class="btn-ghost btn-sm" onclick="ignoreZahlung('${z.id}')">Ignorieren</button></td>
         </tr>`).join('')}
       </tbody>
     </table>
@@ -976,6 +1520,23 @@ function renderZahlungen(){
             <td style="text-align:right;"><button class="btn-ghost btn-sm" onclick="unassignZahlung('${z.id}')">Zuordnung lösen</button></td>
           </tr>`;
         }).join('')}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section-title">Ignoriert (${ignoriert.length})</div>
+  <div class="card">
+    <table>
+      <thead><tr><th>Datum</th><th>Betrag</th><th>Verwendungszweck</th><th></th></tr></thead>
+      <tbody>
+      ${ignoriert.length===0? `<tr><td colspan="4" class="empty">Keine ignorierten Buchungen</td></tr>` :
+        ignoriert.map(z=>`
+        <tr class="rowhover">
+          <td>${fmtDate(z.datum)}</td>
+          <td>${fmtMoney(z.betrag)}</td>
+          <td style="max-width:260px;">${esc(z.verwendungszweck||'')}</td>
+          <td style="text-align:right;"><button class="btn-ghost btn-sm" onclick="unignoreZahlung('${z.id}')">Zurückholen</button></td>
+        </tr>`).join('')}
       </tbody>
     </table>
   </div>`;
@@ -1085,6 +1646,143 @@ async function unassignZahlung(id){
   const z = STATE.zahlungen.find(x=>x.id===id);
   z.vertrag_id = null; z.status='offen';
   showToast('Zuordnung gelöst'); renderPage();
+}
+async function ignoreZahlung(id){
+  await dbUpdate('zahlungen', id, {status:'ignoriert'});
+  STATE.zahlungen.find(x=>x.id===id).status = 'ignoriert';
+  showToast('Zahlung ignoriert'); renderPage();
+}
+async function unignoreZahlung(id){
+  await dbUpdate('zahlungen', id, {status:'offen'});
+  STATE.zahlungen.find(x=>x.id===id).status = 'offen';
+  showToast('Zahlung zurückgeholt'); renderPage();
+}
+
+/* ============================================================
+   DOKUMENTE
+   ============================================================ */
+function renderDokumente(){
+  const filterObjekt = STATE.dokumenteObjektFilter;
+  const liste = filterObjekt? STATE.dokumente.filter(d=>d.objekt_id===filterObjekt) : STATE.dokumente;
+  const objektOpts = STATE.objekte.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('');
+
+  return `
+  <div class="pagehead">
+    <div><h1>Dokumente</h1><div class="desc">Verträge, Rechnungen, Protokolle und Korrespondenz zentral ablegen</div></div>
+  </div>
+
+  <div class="card card-pad" style="margin-bottom:22px;">
+    <div class="field-row-3">
+      <div class="field"><label>Objekt (optional)</label><select id="f-dok-objekt-target"><option value="">– kein Objekt –</option>${objektOpts}</select></div>
+      <div class="field"><label>Kategorie</label><select id="f-dok-kategorie-target">${DOK_KATEGORIEN.map(k=>`<option>${k}</option>`).join('')}</select></div>
+      <div class="field"><label>Notiz (optional)</label><input id="f-dok-notiz-target" placeholder="z.B. Betriebskostenrechnung 2025"></div>
+    </div>
+    <label for="dok-file-input" class="dropzone" style="display:block;">📎 Dateien hierher ziehen oder klicken zum Hochladen</label>
+    <input id="dok-file-input" type="file" multiple style="display:none;" onchange="handleDokumentUpload(event)">
+  </div>
+
+  <div class="subnav">
+    <button class="${!filterObjekt?'active':''}" onclick="STATE.dokumenteObjektFilter=''; renderPage();">Alle Objekte</button>
+    ${STATE.objekte.map(o=>`<button class="${filterObjekt===o.id?'active':''}" onclick="STATE.dokumenteObjektFilter='${o.id}'; renderPage();">${esc(o.name)}</button>`).join('')}
+  </div>
+
+  <div class="card">
+    ${liste.length===0? `<div class="empty">Noch keine Dokumente hochgeladen</div>` :
+      liste.map(d=>`
+      <div class="doc-row">
+        <div>
+          <b>${esc(d.dateiname)}</b>
+          <div class="helptext">${esc(d.kategorie||'')} ${d.objekt_id? ' · '+esc(objektName(d.objekt_id)) : ''} ${d.notizen? ' · '+esc(d.notizen):''} · ${fmtDate((d.hochgeladen_am||'').slice(0,10))}</div>
+        </div>
+        <div style="display:flex;gap:6px;">
+          <button class="btn-ghost btn-sm" onclick="downloadDokument('${d.storage_path}')">Öffnen</button>
+          <button class="btn-danger btn-sm" onclick="deleteDokument('${d.id}','${d.storage_path}')">Löschen</button>
+        </div>
+      </div>`).join('')}
+  </div>`;
+}
+
+async function handleDokumentUpload(evt){
+  const files = evt.target.files;
+  if(!files.length) return;
+  const objektId = document.getElementById('f-dok-objekt-target').value || null;
+  const kategorie = document.getElementById('f-dok-kategorie-target').value;
+  const notiz = document.getElementById('f-dok-notiz-target').value.trim();
+
+  let ok=0, fail=0;
+  for(const file of files){
+    const path = `${objektId||'allgemein'}/${Date.now()}_${file.name}`;
+    const {error} = await sb.storage.from('dokumente').upload(path, file);
+    if(error){ fail++; continue; }
+    const row = await dbInsert('dokumente', {objekt_id:objektId, kategorie, dateiname:file.name, storage_path:path, notizen:notiz});
+    STATE.dokumente.unshift(row);
+    ok++;
+  }
+  evt.target.value = '';
+  showToast(`${ok} Datei(en) hochgeladen${fail?`, ${fail} fehlgeschlagen`:''}`, fail>0 && ok===0);
+  renderPage();
+}
+
+async function downloadDokument(path){
+  const {data, error} = await sb.storage.from('dokumente').createSignedUrl(path, 120);
+  if(error){ showToast('Datei konnte nicht geöffnet werden: '+error.message, true); return; }
+  window.open(data.signedUrl, '_blank');
+}
+async function deleteDokument(id, path){
+  if(!confirm('Dokument wirklich löschen?')) return;
+  await sb.storage.from('dokumente').remove([path]);
+  await dbDelete('dokumente', id);
+  STATE.dokumente = STATE.dokumente.filter(x=>x.id!==id);
+  showToast('Dokument gelöscht'); renderPage();
+}
+
+/* ============================================================
+   BERICHTE
+   ============================================================ */
+function renderBerichte(){
+  const jahr = new Date().getFullYear();
+  const rows = STATE.objekte.map(o=>{
+    const eh = STATE.einheiten.filter(e=>e.objekt_id===o.id);
+    const aktive = eh.map(e=>vertragFuerEinheit(e.id)).filter(Boolean);
+    const sollJahr = aktive.reduce((s,v)=>s+Number(v.kaltmiete||0)*12,0);
+    return {o, anzahlEinheiten:eh.length, vermietet:aktive.length, leer:eh.length-aktive.length, sollJahr};
+  });
+  const gesamtSoll = rows.reduce((s,r)=>s+r.sollJahr,0);
+  const in12 = new Date(); in12.setFullYear(in12.getFullYear()+1);
+  const auslaufend = STATE.vertraege.filter(v=>v.status==='aktiv' && v.ende_datum && new Date(v.ende_datum)<=in12)
+    .sort((a,b)=>a.ende_datum.localeCompare(b.ende_datum));
+
+  return `
+  <div class="pagehead"><div><h1>Berichte</h1><div class="desc">Kennzahlen und Übersichten, Stand ${jahr}</div></div></div>
+
+  <div class="section-title">Jahres-Soll-Mieteinnahmen je Objekt</div>
+  <div class="card" style="margin-bottom:24px;">
+    <table>
+      <thead><tr><th>Objekt</th><th>Einheiten</th><th>Vermietet</th><th>Leerstand</th><th>Soll-Kaltmiete p.a.</th></tr></thead>
+      <tbody>
+      ${rows.length===0? `<tr><td colspan="5" class="empty">Noch keine Objekte</td></tr>` :
+        rows.map(r=>`<tr class="rowhover">
+          <td><b>${esc(r.o.name)}</b></td><td>${r.anzahlEinheiten}</td><td>${r.vermietet}</td>
+          <td>${r.leer>0?`<span class="badge badge-warn">${r.leer}</span>`:'0'}</td>
+          <td>${fmtMoney(r.sollJahr)}</td>
+        </tr>`).join('')}
+      </tbody>
+      ${rows.length? `<tfoot><tr><td colspan="4" style="text-align:right;font-weight:600;padding:12px 14px;">Gesamt</td><td style="font-weight:600;padding:12px 14px;">${fmtMoney(gesamtSoll)}</td></tr></tfoot>`:''}
+    </table>
+  </div>
+
+  <div class="section-title">Vertragsenden – nächste 12 Monate</div>
+  <div class="card">
+    <table>
+      <thead><tr><th>Mieter</th><th>Einheit</th><th>Vertragsende</th></tr></thead>
+      <tbody>
+      ${auslaufend.length===0? `<tr><td colspan="3" class="empty">Keine Vertragsenden in den nächsten 12 Monaten</td></tr>` :
+        auslaufend.map(v=>`<tr class="rowhover">
+          <td>${esc(mieterName(v.mieter_id))}</td><td>${esc(einheitLabel(v.einheit_id))}</td><td>${fmtDate(v.ende_datum)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
 }
 
 /* ============================================================
