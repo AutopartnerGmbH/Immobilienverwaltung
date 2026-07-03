@@ -1,0 +1,1121 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Immobilienverwaltung</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<style>
+  :root{
+    --bg:#F5F3EC;
+    --surface:#FFFFFF;
+    --surface-2:#FBFAF6;
+    --ink:#20281F;
+    --ink-soft:#4A5245;
+    --muted:#8A8577;
+    --primary:#2C4A3E;
+    --primary-light:#3F6656;
+    --primary-dim:#E4EAE5;
+    --accent:#A8763E;
+    --accent-dim:#F1E6D5;
+    --border:#DEDACC;
+    --border-soft:#EAE7DC;
+    --danger:#B33A3A;
+    --danger-dim:#F6E3E1;
+    --warn:#B8862E;
+    --warn-dim:#F7ECD8;
+    --success:#3F7A52;
+    --success-dim:#E4EFE6;
+    --radius:10px;
+    --shadow:0 1px 2px rgba(32,40,31,0.06), 0 4px 16px rgba(32,40,31,0.05);
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:'IBM Plex Sans',sans-serif;font-size:14px;line-height:1.5;}
+  h1,h2,h3,h4{font-family:'Fraunces',serif;font-weight:600;margin:0;color:var(--ink);}
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  a{color:inherit;}
+
+  /* ---------- Layout ---------- */
+  #app{display:flex;min-height:100vh;}
+  #sidebar{
+    width:230px;flex-shrink:0;background:var(--primary);color:#EDF1EC;
+    display:flex;flex-direction:column;padding:22px 0;
+  }
+  #sidebar .brand{padding:0 22px 20px 22px;border-bottom:1px solid rgba(255,255,255,0.12);margin-bottom:14px;}
+  #sidebar .brand .mark{font-family:'Fraunces',serif;font-size:20px;font-weight:600;letter-spacing:0.2px;}
+  #sidebar .brand .sub{font-size:11px;color:#B9C6BE;margin-top:3px;letter-spacing:0.4px;text-transform:uppercase;}
+  .navitem{
+    display:flex;align-items:center;gap:10px;padding:10px 22px;cursor:pointer;
+    color:#CFDACF;font-size:13.5px;border-left:3px solid transparent;transition:all .12s;
+  }
+  .navitem:hover{background:rgba(255,255,255,0.06);color:#fff;}
+  .navitem.active{background:rgba(255,255,255,0.09);color:#fff;border-left-color:var(--accent);font-weight:500;}
+  .navitem .n{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#8FA294;width:16px;}
+  .navitem.active .n{color:var(--accent);}
+
+  #main{flex:1;padding:32px 40px;max-width:1280px;}
+  .pagehead{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:24px;flex-wrap:wrap;gap:12px;}
+  .pagehead h1{font-size:26px;}
+  .pagehead .desc{color:var(--muted);font-size:13px;margin-top:4px;}
+
+  /* ---------- Buttons ---------- */
+  button{font-family:inherit;font-size:13.5px;cursor:pointer;border-radius:7px;border:1px solid transparent;padding:9px 16px;transition:all .12s;}
+  .btn-primary{background:var(--primary);color:#fff;}
+  .btn-primary:hover{background:var(--primary-light);}
+  .btn-outline{background:var(--surface);border-color:var(--border);color:var(--ink);}
+  .btn-outline:hover{border-color:var(--primary);color:var(--primary);}
+  .btn-ghost{background:transparent;color:var(--ink-soft);padding:6px 10px;}
+  .btn-ghost:hover{background:var(--border-soft);}
+  .btn-danger{background:transparent;color:var(--danger);padding:6px 10px;}
+  .btn-danger:hover{background:var(--danger-dim);}
+  .btn-sm{padding:5px 10px;font-size:12.5px;}
+
+  /* ---------- Cards / tables ---------- */
+  .card{background:var(--surface);border:1px solid var(--border-soft);border-radius:var(--radius);box-shadow:var(--shadow);}
+  .card-pad{padding:20px 22px;}
+  table{width:100%;border-collapse:collapse;}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:600;padding:10px 14px;border-bottom:1px solid var(--border);}
+  td{padding:12px 14px;border-bottom:1px solid var(--border-soft);font-size:13.5px;vertical-align:middle;}
+  tr:last-child td{border-bottom:none;}
+  tr.rowhover:hover{background:var(--surface-2);}
+  .empty{padding:36px;text-align:center;color:var(--muted);}
+
+  .badge{display:inline-block;padding:3px 9px;border-radius:20px;font-size:11px;font-weight:500;}
+  .badge-ok{background:var(--success-dim);color:var(--success);}
+  .badge-warn{background:var(--warn-dim);color:var(--warn);}
+  .badge-danger{background:var(--danger-dim);color:var(--danger);}
+  .badge-muted{background:var(--border-soft);color:var(--ink-soft);}
+
+  /* index-tab styled object card (signature element) */
+  .objekt-card{
+    position:relative;background:var(--surface);border:1px solid var(--border-soft);border-radius:8px;
+    padding:16px 18px 16px 22px;box-shadow:var(--shadow);cursor:pointer;transition:transform .12s, box-shadow .12s;
+    border-left:4px solid var(--accent);
+  }
+  .objekt-card:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(32,40,31,0.10);}
+  .objekt-card .idx{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--muted);}
+  .objekt-card h3{font-size:17px;margin-top:2px;}
+  .objekt-card .addr{color:var(--muted);font-size:12.5px;margin-top:2px;}
+  .objekt-card .stats{display:flex;gap:14px;margin-top:12px;font-size:12px;color:var(--ink-soft);}
+  .objekt-card .stats b{color:var(--ink);font-weight:600;}
+
+  .grid{display:grid;gap:16px;}
+  .grid-3{grid-template-columns:repeat(3,1fr);}
+  .grid-4{grid-template-columns:repeat(4,1fr);}
+  @media(max-width:1000px){.grid-3,.grid-4{grid-template-columns:repeat(2,1fr);}}
+
+  .kpi{background:var(--surface);border:1px solid var(--border-soft);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow);}
+  .kpi .label{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;}
+  .kpi .value{font-family:'Fraunces',serif;font-size:28px;margin-top:6px;color:var(--ink);}
+  .kpi .sub{font-size:12px;margin-top:4px;color:var(--ink-soft);}
+
+  /* ---------- Forms ---------- */
+  label{display:block;font-size:12px;color:var(--ink-soft);margin-bottom:5px;font-weight:500;}
+  input,select,textarea{
+    width:100%;padding:9px 11px;border:1px solid var(--border);border-radius:7px;font-family:inherit;font-size:13.5px;
+    background:var(--surface);color:var(--ink);
+  }
+  input:focus,select:focus,textarea:focus{outline:2px solid var(--primary-dim);border-color:var(--primary);}
+  textarea{resize:vertical;min-height:60px;}
+  .field{margin-bottom:14px;}
+  .field-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .field-row-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;}
+  .checkrow{display:flex;align-items:center;gap:8px;}
+  .checkrow input{width:auto;}
+
+  /* ---------- Modal ---------- */
+  #modal-overlay{
+    display:none;position:fixed;inset:0;background:rgba(32,40,31,0.45);z-index:100;
+    align-items:flex-start;justify-content:center;padding:40px 20px;overflow-y:auto;
+  }
+  #modal-overlay.open{display:flex;}
+  #modal-box{background:var(--surface);border-radius:12px;width:100%;max-width:560px;box-shadow:0 20px 60px rgba(0,0,0,0.25);}
+  #modal-box .modal-head{display:flex;justify-content:space-between;align-items:center;padding:18px 22px;border-bottom:1px solid var(--border-soft);}
+  #modal-box .modal-head h3{font-size:18px;}
+  #modal-box .modal-body{padding:22px;max-height:70vh;overflow-y:auto;}
+  #modal-box .modal-foot{padding:16px 22px;border-top:1px solid var(--border-soft);display:flex;justify-content:flex-end;gap:10px;}
+  .modal-close{background:none;border:none;font-size:20px;color:var(--muted);padding:2px 6px;}
+
+  .tag-toggle{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border:1px solid var(--border-soft);border-radius:7px;margin-bottom:6px;}
+  .tag-toggle .name{font-size:13px;}
+  .tag-toggle select{width:150px;}
+
+  .config-banner{background:var(--warn-dim);border:1px solid #E4CB8C;color:#7A5B18;padding:14px 18px;border-radius:8px;margin-bottom:20px;font-size:13px;}
+  .config-banner code{background:rgba(0,0,0,0.06);padding:1px 5px;border-radius:4px;}
+
+  .toast{position:fixed;bottom:24px;right:24px;background:var(--ink);color:#fff;padding:12px 18px;border-radius:8px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,0.2);z-index:200;opacity:0;transform:translateY(8px);transition:all .2s;}
+  .toast.show{opacity:1;transform:translateY(0);}
+  .toast.err{background:var(--danger);}
+
+  .subnav{display:flex;gap:6px;margin-bottom:18px;flex-wrap:wrap;}
+  .subnav button{background:var(--surface);border:1px solid var(--border-soft);color:var(--ink-soft);}
+  .subnav button.active{background:var(--primary-dim);border-color:var(--primary);color:var(--primary);font-weight:500;}
+
+  .breadcrumb{font-size:12.5px;color:var(--muted);margin-bottom:8px;cursor:pointer;}
+  .breadcrumb span:hover{color:var(--primary);}
+
+  .section-title{font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:600;margin:22px 0 10px;}
+  .section-title:first-child{margin-top:0;}
+
+  .helptext{font-size:11.5px;color:var(--muted);margin-top:4px;}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <nav id="sidebar">
+    <div class="brand">
+      <div class="mark">Lückel Immobilien</div>
+      <div class="sub">Hausverwaltung</div>
+    </div>
+    <div class="navitem active" data-page="dashboard"><span class="n">01</span> Dashboard</div>
+    <div class="navitem" data-page="objekte"><span class="n">02</span> Objekte</div>
+    <div class="navitem" data-page="mieter"><span class="n">03</span> Mieter &amp; Verträge</div>
+    <div class="navitem" data-page="zaehler"><span class="n">04</span> Zähler</div>
+    <div class="navitem" data-page="zahlungen"><span class="n">05</span> Zahlungsabgleich</div>
+    <div class="navitem" data-page="einstellungen"><span class="n">06</span> Einstellungen</div>
+  </nav>
+  <main id="main"></main>
+</div>
+
+<div id="modal-overlay">
+  <div id="modal-box">
+    <div class="modal-head"><h3 id="modal-title">Titel</h3><button class="modal-close" onclick="closeModal()">×</button></div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot" id="modal-foot"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ============================================================
+   KONFIGURATION
+   Trage hier einmalig deine Supabase-Zugangsdaten ein.
+   Projekt > Settings > API > "Project URL" und "anon public" Key
+   ============================================================ */
+const SUPABASE_URL = "DEINE_SUPABASE_URL";
+const SUPABASE_ANON_KEY = "DEIN_SUPABASE_ANON_KEY";
+
+let sb = null;
+let CONFIGURED = SUPABASE_URL.startsWith("http") && SUPABASE_ANON_KEY.length > 20;
+if (CONFIGURED) {
+  sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+}
+
+/* ============================================================
+   STATE
+   ============================================================ */
+let STATE = {
+  page: 'dashboard',
+  objekte: [],
+  einheiten: [],
+  mieter: [],
+  vertraege: [],
+  kostenarten: [],
+  objektKostenarten: [],
+  zaehler: [],
+  zaehlerstaende: [],
+  zahlungen: [],
+  rechnungen: [],
+  selectedObjektId: null,
+  csvRows: null,
+  csvMapping: {}
+};
+
+const EINHEIT_TYPEN = ['Wohnung','Garage','Werbetafel'];
+const ZAEHLER_TYPEN = ['Heizung','Kaltwasser','Warmwasser','Strom','Sonstiges'];
+
+/* ============================================================
+   INIT / DATA LOADING
+   ============================================================ */
+async function loadAll(){
+  if(!CONFIGURED) return renderPage();
+  try{
+    const [ob, ei, mi, ve, ka, ok, za, zs, zh, re] = await Promise.all([
+      sb.from('objekte').select('*').order('name'),
+      sb.from('einheiten').select('*').order('bezeichnung'),
+      sb.from('mieter').select('*').order('nachname'),
+      sb.from('vertraege').select('*').order('beginn_datum', {ascending:false}),
+      sb.from('kostenarten').select('*').order('sortierung'),
+      sb.from('objekt_kostenarten').select('*'),
+      sb.from('zaehler').select('*'),
+      sb.from('zaehlerstaende').select('*').order('datum',{ascending:false}),
+      sb.from('zahlungen').select('*').order('datum',{ascending:false}),
+      sb.from('rechnungen').select('*').order('rechnungsdatum',{ascending:false}),
+    ]);
+    STATE.objekte = ob.data||[];
+    STATE.einheiten = ei.data||[];
+    STATE.mieter = mi.data||[];
+    STATE.vertraege = ve.data||[];
+    STATE.kostenarten = ka.data||[];
+    STATE.objektKostenarten = ok.data||[];
+    STATE.zaehler = za.data||[];
+    STATE.zaehlerstaende = zs.data||[];
+    STATE.zahlungen = zh.data||[];
+    STATE.rechnungen = re.data||[];
+  }catch(e){
+    showToast('Fehler beim Laden: '+e.message, true);
+  }
+  renderPage();
+}
+
+function go(page){
+  STATE.page = page;
+  document.querySelectorAll('.navitem').forEach(n=>n.classList.toggle('active', n.dataset.page===page));
+  renderPage();
+}
+document.querySelectorAll('.navitem').forEach(n=>n.addEventListener('click', ()=>go(n.dataset.page)));
+
+/* ============================================================
+   HELPERS
+   ============================================================ */
+function fmtMoney(n){ return (n==null?0:Number(n)).toLocaleString('de-DE',{style:'currency',currency:'EUR'}); }
+function fmtDate(d){ if(!d) return '–'; const [y,m,day]=d.split('-'); return `${day}.${m}.${y}`; }
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function uid(){ return 'id'+Math.random().toString(36).slice(2,9); }
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function showToast(msg, isErr){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (isErr?' err':'');
+  setTimeout(()=>t.classList.remove('show'), 3200);
+}
+
+function objektName(id){ const o=STATE.objekte.find(x=>x.id===id); return o?o.name:'–'; }
+function einheitLabel(id){ const e=STATE.einheiten.find(x=>x.id===id); if(!e) return '–'; return `${e.bezeichnung} · ${objektName(e.objekt_id)}`; }
+function mieterName(id){ const m=STATE.mieter.find(x=>x.id===id); if(!m) return '–'; return m.firma || `${m.vorname||''} ${m.nachname||''}`.trim(); }
+function aktiveVertraege(){ return STATE.vertraege.filter(v=>v.status==='aktiv'); }
+function vertragFuerEinheit(einheitId){ return STATE.vertraege.find(v=>v.einheit_id===einheitId && v.status==='aktiv'); }
+
+async function dbInsert(table, obj){
+  const {data, error} = await sb.from(table).insert(obj).select();
+  if(error){ showToast('Fehler: '+error.message, true); throw error; }
+  return data[0];
+}
+async function dbUpdate(table, id, obj){
+  const {error} = await sb.from(table).update(obj).eq('id', id);
+  if(error){ showToast('Fehler: '+error.message, true); throw error; }
+}
+async function dbDelete(table, id){
+  const {error} = await sb.from(table).delete().eq('id', id);
+  if(error){ showToast('Fehler: '+error.message, true); throw error; }
+}
+
+/* ============================================================
+   MODAL
+   ============================================================ */
+function openModal(title, bodyHtml, footHtml){
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-body').innerHTML = bodyHtml;
+  document.getElementById('modal-foot').innerHTML = footHtml;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+function closeModal(){ document.getElementById('modal-overlay').classList.remove('open'); }
+document.getElementById('modal-overlay').addEventListener('click', e=>{ if(e.target.id==='modal-overlay') closeModal(); });
+
+/* ============================================================
+   RENDER ROOT
+   ============================================================ */
+function renderPage(){
+  const main = document.getElementById('main');
+  if(!CONFIGURED){
+    main.innerHTML = renderConfigNotice();
+    return;
+  }
+  switch(STATE.page){
+    case 'dashboard': main.innerHTML = renderDashboard(); break;
+    case 'objekte': main.innerHTML = renderObjekte(); break;
+    case 'mieter': main.innerHTML = renderMieter(); break;
+    case 'zaehler': main.innerHTML = renderZaehler(); break;
+    case 'zahlungen': main.innerHTML = renderZahlungen(); break;
+    case 'einstellungen': main.innerHTML = renderEinstellungen(); break;
+  }
+}
+
+function renderConfigNotice(){
+  return `
+  <div class="pagehead"><h1>Einrichtung erforderlich</h1></div>
+  <div class="card card-pad">
+    <p>Diese App braucht eine Supabase-Datenbank als Speicher. Einmalig einrichten:</p>
+    <ol style="line-height:2;">
+      <li>Kostenloses Projekt auf <a href="https://supabase.com" target="_blank">supabase.com</a> anlegen</li>
+      <li>Im SQL-Editor die mitgelieferte <code>schema.sql</code> ausführen (legt alle Tabellen an)</li>
+      <li>Unter <b>Project Settings → API</b> die <b>Project URL</b> und den <b>anon public key</b> kopieren</li>
+      <li>Im HTML-Quelltext dieser Datei ganz oben im Script-Block <code>SUPABASE_URL</code> und <code>SUPABASE_ANON_KEY</code> eintragen</li>
+      <li>Datei speichern und neu öffnen</li>
+    </ol>
+  </div>`;
+}
+
+/* ============================================================
+   DASHBOARD
+   ============================================================ */
+function renderDashboard(){
+  const wohn = STATE.einheiten.filter(e=>e.typ==='Wohnung');
+  const garagen = STATE.einheiten.filter(e=>e.typ==='Garage');
+  const werbe = STATE.einheiten.filter(e=>e.typ==='Werbetafel');
+  const vermietbar = STATE.einheiten.length;
+  const belegt = aktiveVertraege().length;
+  const quote = vermietbar? Math.round(belegt/vermietbar*100):0;
+
+  const offeneZahlungen = STATE.zahlungen.filter(z=>z.status==='offen');
+  const offeneSumme = offeneZahlungen.reduce((s,z)=>s+Number(z.betrag||0),0);
+
+  const heuteD = new Date();
+  const in60 = new Date(); in60.setDate(in60.getDate()+60);
+  const auslaufend = STATE.vertraege.filter(v=>v.status==='aktiv' && v.ende_datum && new Date(v.ende_datum)<=in60 && new Date(v.ende_datum)>=heuteD);
+
+  const sollMieteGesamt = aktiveVertraege().reduce((s,v)=>s+Number(v.kaltmiete||0)+Number(v.nk_vorauszahlung||0),0);
+
+  return `
+  <div class="pagehead">
+    <div><h1>Dashboard</h1><div class="desc">Gesamtübersicht über alle Objekte, Einheiten und offenen Posten</div></div>
+  </div>
+
+  <div class="grid grid-4" style="margin-bottom:24px;">
+    <div class="kpi"><div class="label">Objekte</div><div class="value">${STATE.objekte.length}</div><div class="sub">${wohn.length} Wohnungen · ${garagen.length} Garagen · ${werbe.length} Werbetafeln</div></div>
+    <div class="kpi"><div class="label">Belegungsquote</div><div class="value">${quote}%</div><div class="sub">${belegt} von ${vermietbar} Einheiten vermietet</div></div>
+    <div class="kpi"><div class="label">Soll-Mieteinnahmen / Monat</div><div class="value">${fmtMoney(sollMieteGesamt)}</div><div class="sub">aus ${belegt} aktiven Verträgen</div></div>
+    <div class="kpi"><div class="label">Offene Zahlungen</div><div class="value" style="color:${offeneZahlungen.length?'var(--danger)':'var(--ink)'}">${offeneZahlungen.length}</div><div class="sub">${fmtMoney(offeneSumme)} nicht zugeordnet</div></div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:1.4fr 1fr; align-items:start;">
+    <div class="card">
+      <div class="card-pad" style="border-bottom:1px solid var(--border-soft);"><h3 style="font-size:15px;">Objekte im Überblick</h3></div>
+      <table>
+        <thead><tr><th>Objekt</th><th>Einheiten</th><th>Vermietet</th><th>Kaltmiete Soll</th></tr></thead>
+        <tbody>
+        ${STATE.objekte.length===0? `<tr><td colspan="4" class="empty">Noch keine Objekte angelegt</td></tr>` :
+          STATE.objekte.map(o=>{
+            const eh = STATE.einheiten.filter(e=>e.objekt_id===o.id);
+            const akt = eh.filter(e=>vertragFuerEinheit(e.id));
+            const soll = eh.reduce((s,e)=>{ const v=vertragFuerEinheit(e.id); return s+(v?Number(v.kaltmiete||0):0); },0);
+            return `<tr class="rowhover">
+              <td><b>${esc(o.name)}</b><div style="color:var(--muted);font-size:11.5px;">${esc(o.ort||'')}</div></td>
+              <td>${eh.length}</td>
+              <td>${akt.length}/${eh.length}</td>
+              <td>${fmtMoney(soll)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-pad" style="border-bottom:1px solid var(--border-soft);"><h3 style="font-size:15px;">Bald auslaufende Verträge</h3></div>
+      <div style="padding:6px 0;">
+      ${auslaufend.length===0? `<div class="empty">Keine Verträge laufen in den nächsten 60 Tagen aus</div>` :
+        auslaufend.map(v=>`
+        <div style="padding:12px 22px;border-bottom:1px solid var(--border-soft);display:flex;justify-content:space-between;">
+          <div><b>${esc(mieterName(v.mieter_id))}</b><div style="color:var(--muted);font-size:12px;">${esc(einheitLabel(v.einheit_id))}</div></div>
+          <div class="badge badge-warn">bis ${fmtDate(v.ende_datum)}</div>
+        </div>`).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ============================================================
+   OBJEKTE
+   ============================================================ */
+function renderObjekte(){
+  if(STATE.selectedObjektId){
+    return renderObjektDetail(STATE.selectedObjektId);
+  }
+  return `
+  <div class="pagehead">
+    <div><h1>Objekte</h1><div class="desc">Alle Liegenschaften mit ihren Einheiten</div></div>
+    <button class="btn-primary" onclick="openObjektForm()">+ Neues Objekt</button>
+  </div>
+  <div class="grid grid-3">
+    ${STATE.objekte.length===0? `<div class="card"><div class="empty">Noch keine Objekte angelegt. Leg dein erstes Objekt an.</div></div>` :
+      STATE.objekte.map((o,i)=>{
+        const eh = STATE.einheiten.filter(e=>e.objekt_id===o.id);
+        const akt = eh.filter(e=>vertragFuerEinheit(e.id));
+        return `
+        <div class="objekt-card" onclick="openObjektDetail('${o.id}')">
+          <div class="idx">OBJ-${String(i+1).padStart(3,'0')}</div>
+          <h3>${esc(o.name)}</h3>
+          <div class="addr">${esc(o.strasse||'')}, ${esc(o.plz||'')} ${esc(o.ort||'')}</div>
+          <div class="stats">
+            <span><b>${eh.length}</b> Einheiten</span>
+            <span><b>${akt.length}</b> vermietet</span>
+            <span><b>${o.heizkosten_verbrauch_anteil}%</b> HK-Verbrauch</span>
+          </div>
+        </div>`;
+      }).join('')}
+  </div>`;
+}
+
+function openObjektDetail(id){ STATE.selectedObjektId = id; renderPage(); }
+
+function renderObjektDetail(id){
+  const o = STATE.objekte.find(x=>x.id===id);
+  if(!o){ STATE.selectedObjektId=null; return renderObjekte(); }
+  const eh = STATE.einheiten.filter(e=>e.objekt_id===id);
+  const aktiveKa = STATE.objektKostenarten.filter(k=>k.objekt_id===id);
+
+  return `
+  <div class="breadcrumb"><span onclick="STATE.selectedObjektId=null; renderPage();">← Alle Objekte</span></div>
+  <div class="pagehead">
+    <div><h1>${esc(o.name)}</h1><div class="desc">${esc(o.strasse||'')}, ${esc(o.plz||'')} ${esc(o.ort||'')}</div></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn-outline" onclick="openObjektForm('${o.id}')">Bearbeiten</button>
+      <button class="btn-danger" onclick="deleteObjekt('${o.id}')">Löschen</button>
+    </div>
+  </div>
+
+  ${o.besonderheiten? `<div class="card card-pad" style="margin-bottom:20px;background:var(--accent-dim);border:none;"><b>Besonderheiten:</b> ${esc(o.besonderheiten)}</div>`:''}
+
+  <div class="section-title">Einheiten (${eh.length})</div>
+  <div class="card" style="margin-bottom:26px;">
+    <table>
+      <thead><tr><th>Typ</th><th>Bezeichnung</th><th>Fläche</th><th>Mieter</th><th>Kaltmiete</th><th></th></tr></thead>
+      <tbody>
+      ${eh.length===0? `<tr><td colspan="6" class="empty">Noch keine Einheiten. Leg Wohnungen/Garagen/Werbetafeln an.</td></tr>` :
+        eh.map(e=>{
+          const v = vertragFuerEinheit(e.id);
+          return `<tr class="rowhover">
+            <td><span class="badge badge-muted">${e.typ}</span></td>
+            <td><b>${esc(e.bezeichnung)}</b></td>
+            <td>${e.wohnflaeche_m2? e.wohnflaeche_m2+' m²':'–'}</td>
+            <td>${v? esc(mieterName(v.mieter_id)) : '<span style="color:var(--muted);">frei</span>'}</td>
+            <td>${v? fmtMoney(v.kaltmiete):'–'}</td>
+            <td style="text-align:right;">
+              <button class="btn-ghost btn-sm" onclick="openEinheitForm('${o.id}','${e.id}')">Bearbeiten</button>
+              <button class="btn-danger btn-sm" onclick="deleteEinheit('${e.id}')">Löschen</button>
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+    <div style="padding:14px 18px;"><button class="btn-outline btn-sm" onclick="openEinheitForm('${o.id}')">+ Einheit hinzufügen</button></div>
+  </div>
+
+  <div class="section-title">Kostenarten für dieses Objekt</div>
+  <div class="card card-pad">
+    <div class="helptext" style="margin-bottom:12px;">Standardmäßig sind übliche Kostenarten aktiv. Hier kannst du einzelne deaktivieren oder den Verteilerschlüssel nur für dieses Objekt abweichend setzen.</div>
+    ${STATE.kostenarten.map(k=>{
+      const ok = aktiveKa.find(x=>x.kostenart_id===k.id);
+      const aktiv = ok? ok.aktiv : true;
+      const schluessel = ok?.verteilerschluessel_override || k.standard_verteilerschluessel;
+      return `
+      <div class="tag-toggle">
+        <div class="checkrow">
+          <input type="checkbox" ${aktiv?'checked':''} onchange="toggleKostenart('${o.id}','${k.id}', this.checked)">
+          <span class="name">${esc(k.name)} ${k.ist_heizkosten?'<span class=\"badge badge-warn\" style=\"margin-left:6px;\">Heizkosten</span>':''}</span>
+        </div>
+        <select onchange="setSchluessel('${o.id}','${k.id}', this.value)">
+          <option value="m2" ${schluessel==='m2'?'selected':''}>nach m²</option>
+          <option value="personen" ${schluessel==='personen'?'selected':''}>nach Personen</option>
+          <option value="verbrauch" ${schluessel==='verbrauch'?'selected':''}>nach Verbrauch</option>
+          <option value="individuell" ${schluessel==='individuell'?'selected':''}>individuell</option>
+        </select>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+async function toggleKostenart(objektId, kostenartId, aktiv){
+  const existing = STATE.objektKostenarten.find(x=>x.objekt_id===objektId && x.kostenart_id===kostenartId);
+  if(existing){ await dbUpdate('objekt_kostenarten', existing.id, {aktiv}); existing.aktiv=aktiv; }
+  else{ const row = await dbInsert('objekt_kostenarten', {objekt_id:objektId, kostenart_id:kostenartId, aktiv}); STATE.objektKostenarten.push(row); }
+  showToast('Gespeichert');
+}
+async function setSchluessel(objektId, kostenartId, wert){
+  const existing = STATE.objektKostenarten.find(x=>x.objekt_id===objektId && x.kostenart_id===kostenartId);
+  if(existing){ await dbUpdate('objekt_kostenarten', existing.id, {verteilerschluessel_override:wert}); existing.verteilerschluessel_override=wert; }
+  else{ const row = await dbInsert('objekt_kostenarten', {objekt_id:objektId, kostenart_id:kostenartId, aktiv:true, verteilerschluessel_override:wert}); STATE.objektKostenarten.push(row); }
+  showToast('Gespeichert');
+}
+
+function openObjektForm(id){
+  const o = id? STATE.objekte.find(x=>x.id===id) : {};
+  const body = `
+    <div class="field"><label>Name des Objekts</label><input id="f-name" value="${esc(o.name||'')}" placeholder="z.B. Mendener Str. 143"></div>
+    <div class="field-row">
+      <div class="field"><label>Straße &amp; Hausnummer</label><input id="f-strasse" value="${esc(o.strasse||'')}"></div>
+      <div class="field"><label>PLZ</label><input id="f-plz" value="${esc(o.plz||'')}"></div>
+    </div>
+    <div class="field"><label>Ort</label><input id="f-ort" value="${esc(o.ort||'')}"></div>
+    <div class="field">
+      <label>Heizkosten-Verteilung: Anteil nach Verbrauch (%)</label>
+      <input id="f-hk" type="number" min="50" max="70" value="${o.heizkosten_verbrauch_anteil||70}">
+      <div class="helptext">Gesetzlich vorgeschrieben: 50–70% nach Verbrauch, Rest nach Fläche. Standard: 70%.</div>
+    </div>
+    <div class="field"><label>Besonderheiten / individuelle Absprachen für dieses Haus</label><textarea id="f-bes" placeholder="z.B. Garage wird pauschal mit abgerechnet, eigener Hausmeister-Vertrag...">${esc(o.besonderheiten||'')}</textarea></div>
+  `;
+  const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="saveObjekt('${id||''}')">Speichern</button>`;
+  openModal(id?'Objekt bearbeiten':'Neues Objekt', body, foot);
+}
+async function saveObjekt(id){
+  const obj = {
+    name: document.getElementById('f-name').value.trim(),
+    strasse: document.getElementById('f-strasse').value.trim(),
+    plz: document.getElementById('f-plz').value.trim(),
+    ort: document.getElementById('f-ort').value.trim(),
+    heizkosten_verbrauch_anteil: Number(document.getElementById('f-hk').value)||70,
+    besonderheiten: document.getElementById('f-bes').value.trim(),
+  };
+  if(!obj.name){ showToast('Bitte einen Namen eingeben', true); return; }
+  if(id){ await dbUpdate('objekte', id, obj); Object.assign(STATE.objekte.find(x=>x.id===id), obj); }
+  else{ const row = await dbInsert('objekte', obj); STATE.objekte.push(row); }
+  closeModal(); showToast('Objekt gespeichert'); renderPage();
+}
+async function deleteObjekt(id){
+  if(!confirm('Objekt wirklich löschen? Alle zugehörigen Einheiten, Verträge und Zähler werden ebenfalls gelöscht.')) return;
+  await dbDelete('objekte', id);
+  STATE.objekte = STATE.objekte.filter(x=>x.id!==id);
+  STATE.einheiten = STATE.einheiten.filter(x=>x.objekt_id!==id);
+  STATE.selectedObjektId = null;
+  showToast('Objekt gelöscht'); renderPage();
+}
+
+function openEinheitForm(objektId, einheitId){
+  const e = einheitId? STATE.einheiten.find(x=>x.id===einheitId) : {};
+  const body = `
+    <div class="field-row">
+      <div class="field"><label>Typ</label>
+        <select id="f-typ">${EINHEIT_TYPEN.map(t=>`<option value="${t}" ${e.typ===t?'selected':''}>${t}</option>`).join('')}</select>
+      </div>
+      <div class="field"><label>Bezeichnung</label><input id="f-bez" value="${esc(e.bezeichnung||'')}" placeholder="z.B. 1. OG links"></div>
+    </div>
+    <div class="field-row-3">
+      <div class="field"><label>Wohnfläche (m²)</label><input id="f-flaeche" type="number" step="0.1" value="${e.wohnflaeche_m2||''}"></div>
+      <div class="field"><label>Zimmer</label><input id="f-zimmer" type="number" step="0.5" value="${e.zimmer||''}"></div>
+      <div class="field"><label>Etage</label><input id="f-etage" value="${esc(e.etage||'')}"></div>
+    </div>
+    <div class="field"><label>Notizen</label><textarea id="f-notiz">${esc(e.notizen||'')}</textarea></div>
+  `;
+  const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="saveEinheit('${objektId}','${einheitId||''}')">Speichern</button>`;
+  openModal(einheitId?'Einheit bearbeiten':'Neue Einheit', body, foot);
+}
+async function saveEinheit(objektId, einheitId){
+  const obj = {
+    objekt_id: objektId,
+    typ: document.getElementById('f-typ').value,
+    bezeichnung: document.getElementById('f-bez').value.trim(),
+    wohnflaeche_m2: document.getElementById('f-flaeche').value? Number(document.getElementById('f-flaeche').value): null,
+    zimmer: document.getElementById('f-zimmer').value? Number(document.getElementById('f-zimmer').value): null,
+    etage: document.getElementById('f-etage').value.trim(),
+    notizen: document.getElementById('f-notiz').value.trim(),
+  };
+  if(!obj.bezeichnung){ showToast('Bitte eine Bezeichnung eingeben', true); return; }
+  if(einheitId){ await dbUpdate('einheiten', einheitId, obj); Object.assign(STATE.einheiten.find(x=>x.id===einheitId), obj); }
+  else{ const row = await dbInsert('einheiten', obj); STATE.einheiten.push(row); }
+  closeModal(); showToast('Einheit gespeichert'); renderPage();
+}
+async function deleteEinheit(id){
+  if(!confirm('Einheit wirklich löschen?')) return;
+  await dbDelete('einheiten', id);
+  STATE.einheiten = STATE.einheiten.filter(x=>x.id!==id);
+  showToast('Einheit gelöscht'); renderPage();
+}
+
+/* ============================================================
+   MIETER & VERTRÄGE
+   ============================================================ */
+function renderMieter(){
+  return `
+  <div class="pagehead">
+    <div><h1>Mieter &amp; Verträge</h1><div class="desc">Alle Mieter und ihre Mietverträge, inkl. Sondervereinbarungen</div></div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn-outline" onclick="openMieterForm()">+ Mieter</button>
+      <button class="btn-primary" onclick="openVertragForm()">+ Vertrag</button>
+    </div>
+  </div>
+  <div class="card">
+    <table>
+      <thead><tr><th>Mieter</th><th>Einheit</th><th>Zeitraum</th><th>Kaltmiete</th><th>NK-Vorauszahlung</th><th>Status</th><th>Sondervereinbarung</th><th></th></tr></thead>
+      <tbody>
+      ${STATE.vertraege.length===0? `<tr><td colspan="8" class="empty">Noch keine Verträge angelegt</td></tr>` :
+        STATE.vertraege.map(v=>`
+        <tr class="rowhover">
+          <td><b>${esc(mieterName(v.mieter_id))}</b></td>
+          <td>${esc(einheitLabel(v.einheit_id))}</td>
+          <td>${fmtDate(v.beginn_datum)} – ${v.ende_datum?fmtDate(v.ende_datum):'laufend'}</td>
+          <td>${fmtMoney(v.kaltmiete)}</td>
+          <td>${fmtMoney(v.nk_vorauszahlung)}</td>
+          <td>${statusBadge(v.status)}</td>
+          <td style="max-width:200px;color:var(--ink-soft);font-size:12.5px;">${esc(v.sondervereinbarungen||'–')}</td>
+          <td style="text-align:right;white-space:nowrap;">
+            <button class="btn-ghost btn-sm" onclick="openVertragForm('${v.id}')">Bearbeiten</button>
+            <button class="btn-danger btn-sm" onclick="deleteVertrag('${v.id}')">Löschen</button>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section-title">Mieter-Stammdaten</div>
+  <div class="card">
+    <table>
+      <thead><tr><th>Name</th><th>Kontakt</th><th>Notizen</th><th></th></tr></thead>
+      <tbody>
+      ${STATE.mieter.length===0? `<tr><td colspan="4" class="empty">Noch keine Mieter angelegt</td></tr>` :
+        STATE.mieter.map(m=>`
+        <tr class="rowhover">
+          <td><b>${esc(mieterName(m.id))}</b></td>
+          <td>${esc(m.email||'')} ${m.telefon?' · '+esc(m.telefon):''}</td>
+          <td style="color:var(--ink-soft);font-size:12.5px;">${esc(m.notizen||'–')}</td>
+          <td style="text-align:right;">
+            <button class="btn-ghost btn-sm" onclick="openMieterForm('${m.id}')">Bearbeiten</button>
+            <button class="btn-danger btn-sm" onclick="deleteMieter('${m.id}')">Löschen</button>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+function statusBadge(s){
+  if(s==='aktiv') return '<span class="badge badge-ok">aktiv</span>';
+  if(s==='beendet') return '<span class="badge badge-muted">beendet</span>';
+  return '<span class="badge badge-warn">zukünftig</span>';
+}
+
+function openMieterForm(id){
+  const m = id? STATE.mieter.find(x=>x.id===id) : {};
+  const body = `
+    <div class="field-row">
+      <div class="field"><label>Vorname</label><input id="f-vn" value="${esc(m.vorname||'')}"></div>
+      <div class="field"><label>Nachname</label><input id="f-nn" value="${esc(m.nachname||'')}"></div>
+    </div>
+    <div class="field"><label>Firma (falls Gewerbe, z.B. Werbetafel-Mieter)</label><input id="f-firma" value="${esc(m.firma||'')}"></div>
+    <div class="field-row">
+      <div class="field"><label>E-Mail</label><input id="f-email" value="${esc(m.email||'')}"></div>
+      <div class="field"><label>Telefon</label><input id="f-tel" value="${esc(m.telefon||'')}"></div>
+    </div>
+    <div class="field"><label>Notizen</label><textarea id="f-notiz">${esc(m.notizen||'')}</textarea></div>
+  `;
+  const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="saveMieter('${id||''}')">Speichern</button>`;
+  openModal(id?'Mieter bearbeiten':'Neuer Mieter', body, foot);
+}
+async function saveMieter(id){
+  const obj = {
+    vorname: document.getElementById('f-vn').value.trim(),
+    nachname: document.getElementById('f-nn').value.trim(),
+    firma: document.getElementById('f-firma').value.trim(),
+    email: document.getElementById('f-email').value.trim(),
+    telefon: document.getElementById('f-tel').value.trim(),
+    notizen: document.getElementById('f-notiz').value.trim(),
+  };
+  if(!obj.vorname && !obj.nachname && !obj.firma){ showToast('Bitte Name oder Firma eingeben', true); return; }
+  if(id){ await dbUpdate('mieter', id, obj); Object.assign(STATE.mieter.find(x=>x.id===id), obj); }
+  else{ const row = await dbInsert('mieter', obj); STATE.mieter.push(row); }
+  closeModal(); showToast('Mieter gespeichert'); renderPage();
+}
+async function deleteMieter(id){
+  if(!confirm('Mieter wirklich löschen? Zugehörige Verträge müssen vorher gelöscht werden.')) return;
+  try{ await dbDelete('mieter', id); STATE.mieter = STATE.mieter.filter(x=>x.id!==id); showToast('Mieter gelöscht'); renderPage(); }
+  catch(e){}
+}
+
+function openVertragForm(id){
+  const v = id? STATE.vertraege.find(x=>x.id===id) : {};
+  const einheitenOpts = STATE.einheiten.map(e=>`<option value="${e.id}" ${v.einheit_id===e.id?'selected':''}>${esc(einheitLabel(e.id))}</option>`).join('');
+  const mieterOpts = STATE.mieter.map(m=>`<option value="${m.id}" ${v.mieter_id===m.id?'selected':''}>${esc(mieterName(m.id))}</option>`).join('');
+  const body = `
+    <div class="field"><label>Einheit</label><select id="f-einheit">${einheitenOpts||'<option>Erst Einheit anlegen</option>'}</select></div>
+    <div class="field"><label>Mieter</label><select id="f-mieter">${mieterOpts||'<option>Erst Mieter anlegen</option>'}</select></div>
+    <div class="field-row">
+      <div class="field"><label>Vertragsbeginn</label><input id="f-beginn" type="date" value="${v.beginn_datum||todayStr()}"></div>
+      <div class="field"><label>Vertragsende (leer = unbefristet)</label><input id="f-ende" type="date" value="${v.ende_datum||''}"></div>
+    </div>
+    <div class="field-row-3">
+      <div class="field"><label>Kaltmiete (€)</label><input id="f-kalt" type="number" step="0.01" value="${v.kaltmiete||''}"></div>
+      <div class="field"><label>NK-Vorauszahlung (€)</label><input id="f-nk" type="number" step="0.01" value="${v.nk_vorauszahlung||''}"></div>
+      <div class="field"><label>Kaution (€)</label><input id="f-kaution" type="number" step="0.01" value="${v.kaution||''}"></div>
+    </div>
+    <div class="field">
+      <label>Status</label>
+      <select id="f-status">
+        <option value="aktiv" ${v.status==='aktiv'?'selected':''}>aktiv</option>
+        <option value="zukuenftig" ${v.status==='zukuenftig'?'selected':''}>zukünftig</option>
+        <option value="beendet" ${v.status==='beendet'?'selected':''}>beendet</option>
+      </select>
+    </div>
+    <div class="field"><label>Miete fällig bis zum ... Tag des Monats</label><input id="f-ziel" type="number" min="1" max="28" value="${v.zahlungsziel_tag||3}"></div>
+    <div class="field"><label>Sondervereinbarungen (individuelle Absprachen mit diesem Mieter)</label>
+      <textarea id="f-sonder" placeholder="z.B. zahlt keine Müllgebühr, hat eigenen Entsorgervertrag / Pauschale statt Abrechnung...">${esc(v.sondervereinbarungen||'')}</textarea>
+      <div class="helptext">Wird bei der Nebenkostenabrechnung berücksichtigt.</div>
+    </div>
+  `;
+  const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="saveVertrag('${id||''}')">Speichern</button>`;
+  openModal(id?'Vertrag bearbeiten':'Neuer Vertrag', body, foot);
+}
+async function saveVertrag(id){
+  const obj = {
+    einheit_id: document.getElementById('f-einheit').value,
+    mieter_id: document.getElementById('f-mieter').value,
+    beginn_datum: document.getElementById('f-beginn').value,
+    ende_datum: document.getElementById('f-ende').value || null,
+    kaltmiete: Number(document.getElementById('f-kalt').value)||0,
+    nk_vorauszahlung: Number(document.getElementById('f-nk').value)||0,
+    kaution: document.getElementById('f-kaution').value? Number(document.getElementById('f-kaution').value): null,
+    status: document.getElementById('f-status').value,
+    zahlungsziel_tag: Number(document.getElementById('f-ziel').value)||3,
+    sondervereinbarungen: document.getElementById('f-sonder').value.trim(),
+  };
+  if(!obj.einheit_id || !obj.mieter_id){ showToast('Bitte Einheit und Mieter wählen', true); return; }
+  if(id){ await dbUpdate('vertraege', id, obj); Object.assign(STATE.vertraege.find(x=>x.id===id), obj); }
+  else{ const row = await dbInsert('vertraege', obj); STATE.vertraege.push(row); }
+  closeModal(); showToast('Vertrag gespeichert'); renderPage();
+}
+async function deleteVertrag(id){
+  if(!confirm('Vertrag wirklich löschen?')) return;
+  await dbDelete('vertraege', id);
+  STATE.vertraege = STATE.vertraege.filter(x=>x.id!==id);
+  showToast('Vertrag gelöscht'); renderPage();
+}
+
+/* ============================================================
+   ZÄHLER
+   ============================================================ */
+function renderZaehler(){
+  return `
+  <div class="pagehead">
+    <div><h1>Zähler</h1><div class="desc">Zählernummern je Objekt/Einheit, mit Ablesehistorie für die spätere Verbrauchsabrechnung</div></div>
+    <button class="btn-primary" onclick="openZaehlerForm()">+ Zähler anlegen</button>
+  </div>
+  ${STATE.objekte.length===0? `<div class="card"><div class="empty">Erst ein Objekt anlegen</div></div>` :
+    STATE.objekte.map(o=>{
+      const zl = STATE.zaehler.filter(z=>z.objekt_id===o.id);
+      if(zl.length===0 && STATE.objekte.length>1) return '';
+      return `
+      <div class="section-title">${esc(o.name)}</div>
+      <div class="card" style="margin-bottom:22px;">
+        <table>
+          <thead><tr><th>Typ</th><th>Zählernummer</th><th>Zuordnung</th><th>Standort</th><th>Letzter Stand</th><th></th></tr></thead>
+          <tbody>
+          ${zl.length===0? `<tr><td colspan="6" class="empty">Noch keine Zähler für dieses Objekt</td></tr>` :
+            zl.map(z=>{
+              const staende = STATE.zaehlerstaende.filter(s=>s.zaehler_id===z.id).sort((a,b)=>b.datum.localeCompare(a.datum));
+              const letzter = staende[0];
+              return `<tr class="rowhover">
+                <td><span class="badge badge-muted">${z.typ}</span></td>
+                <td class="mono">${esc(z.zaehlernummer)}</td>
+                <td>${z.einheit_id? esc(einheitLabel(z.einheit_id)) : '<span style="color:var(--muted);">Allgemein (ganzes Objekt)</span>'}</td>
+                <td>${esc(z.standort||'–')}</td>
+                <td>${letzter? `${letzter.stand} <span style="color:var(--muted);">(${fmtDate(letzter.datum)})</span>`:'<span style="color:var(--muted);">keine Ablesung</span>'}</td>
+                <td style="text-align:right;white-space:nowrap;">
+                  <button class="btn-ghost btn-sm" onclick="openZaehlerstandForm('${z.id}')">+ Ablesung</button>
+                  <button class="btn-ghost btn-sm" onclick="openZaehlerForm('${z.id}')">Bearbeiten</button>
+                  <button class="btn-danger btn-sm" onclick="deleteZaehler('${z.id}')">Löschen</button>
+                </td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`;
+    }).join('')}
+  `;
+}
+
+function openZaehlerForm(id){
+  const z = id? STATE.zaehler.find(x=>x.id===id) : {};
+  const objektOpts = STATE.objekte.map(o=>`<option value="${o.id}" ${z.objekt_id===o.id?'selected':''}>${esc(o.name)}</option>`).join('');
+  const body = `
+    <div class="field"><label>Objekt</label><select id="f-objekt" onchange="refreshEinheitOptions()">${objektOpts}</select></div>
+    <div class="field"><label>Einheit (leer lassen bei Allgemeinzähler fürs ganze Haus)</label>
+      <select id="f-einheit-z"><option value="">– Allgemeinzähler –</option></select>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Zählertyp</label><select id="f-ztyp">${ZAEHLER_TYPEN.map(t=>`<option value="${t}" ${z.typ===t?'selected':''}>${t}</option>`).join('')}</select></div>
+      <div class="field"><label>Zählernummer</label><input id="f-znr" class="mono" value="${esc(z.zaehlernummer||'')}" placeholder="z.B. 0012345678"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Standort</label><input id="f-standort" value="${esc(z.standort||'')}" placeholder="z.B. Keller, Flur"></div>
+      <div class="field"><label>Einbaudatum</label><input id="f-einbau" type="date" value="${z.einbaudatum||''}"></div>
+    </div>
+    <div class="field"><label>Notizen</label><textarea id="f-znotiz">${esc(z.notizen||'')}</textarea></div>
+  `;
+  const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="saveZaehler('${id||''}')">Speichern</button>`;
+  openModal(id?'Zähler bearbeiten':'Neuer Zähler', body, foot);
+  refreshEinheitOptions(z.einheit_id);
+}
+function refreshEinheitOptions(selected){
+  const objektId = document.getElementById('f-objekt').value;
+  const sel = document.getElementById('f-einheit-z');
+  const eh = STATE.einheiten.filter(e=>e.objekt_id===objektId);
+  sel.innerHTML = '<option value="">– Allgemeinzähler –</option>' + eh.map(e=>`<option value="${e.id}" ${selected===e.id?'selected':''}>${esc(e.bezeichnung)}</option>`).join('');
+}
+async function saveZaehler(id){
+  const obj = {
+    objekt_id: document.getElementById('f-objekt').value,
+    einheit_id: document.getElementById('f-einheit-z').value || null,
+    typ: document.getElementById('f-ztyp').value,
+    zaehlernummer: document.getElementById('f-znr').value.trim(),
+    standort: document.getElementById('f-standort').value.trim(),
+    einbaudatum: document.getElementById('f-einbau').value || null,
+    notizen: document.getElementById('f-znotiz').value.trim(),
+  };
+  if(!obj.zaehlernummer){ showToast('Bitte Zählernummer eingeben', true); return; }
+  if(id){ await dbUpdate('zaehler', id, obj); Object.assign(STATE.zaehler.find(x=>x.id===id), obj); }
+  else{ const row = await dbInsert('zaehler', obj); STATE.zaehler.push(row); }
+  closeModal(); showToast('Zähler gespeichert'); renderPage();
+}
+async function deleteZaehler(id){
+  if(!confirm('Zähler inkl. aller Ablesungen wirklich löschen?')) return;
+  await dbDelete('zaehler', id);
+  STATE.zaehler = STATE.zaehler.filter(x=>x.id!==id);
+  STATE.zaehlerstaende = STATE.zaehlerstaende.filter(x=>x.zaehler_id!==id);
+  showToast('Zähler gelöscht'); renderPage();
+}
+
+function openZaehlerstandForm(zaehlerId){
+  const z = STATE.zaehler.find(x=>x.id===zaehlerId);
+  const staende = STATE.zaehlerstaende.filter(s=>s.zaehler_id===zaehlerId).sort((a,b)=>b.datum.localeCompare(a.datum));
+  const body = `
+    <div class="helptext" style="margin-bottom:12px;">Zähler <b class="mono">${esc(z.zaehlernummer)}</b> · ${z.typ}</div>
+    <div class="field-row">
+      <div class="field"><label>Ablesedatum</label><input id="f-adatum" type="date" value="${todayStr()}"></div>
+      <div class="field"><label>Zählerstand</label><input id="f-astand" type="number" step="0.001"></div>
+    </div>
+    <div class="field"><label>Ablesegrund</label>
+      <select id="f-agrund"><option>Jahresablesung</option><option>Mieterwechsel Einzug</option><option>Mieterwechsel Auszug</option><option>Zwischenablesung</option></select>
+    </div>
+    ${staende.length? `<div class="section-title">Historie</div>` + staende.map(s=>`<div style="display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid var(--border-soft);font-size:13px;"><span>${fmtDate(s.datum)} · ${esc(s.ablesegrund||'')}</span><b class="mono">${s.stand}</b></div>`).join('') : ''}
+  `;
+  const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="saveZaehlerstand('${zaehlerId}')">Speichern</button>`;
+  openModal('Zählerstand erfassen', body, foot);
+}
+async function saveZaehlerstand(zaehlerId){
+  const obj = {
+    zaehler_id: zaehlerId,
+    datum: document.getElementById('f-adatum').value,
+    stand: Number(document.getElementById('f-astand').value),
+    ablesegrund: document.getElementById('f-agrund').value,
+  };
+  if(!obj.datum || isNaN(obj.stand)){ showToast('Bitte Datum und Stand eingeben', true); return; }
+  const row = await dbInsert('zaehlerstaende', obj);
+  STATE.zaehlerstaende.push(row);
+  closeModal(); showToast('Zählerstand gespeichert'); renderPage();
+}
+
+/* ============================================================
+   ZAHLUNGSABGLEICH
+   ============================================================ */
+function renderZahlungen(){
+  const offen = STATE.zahlungen.filter(z=>z.status==='offen');
+  const zugeordnet = STATE.zahlungen.filter(z=>z.status==='zugeordnet');
+
+  return `
+  <div class="pagehead">
+    <div><h1>Zahlungsabgleich</h1><div class="desc">Kontoauszug als CSV importieren und mit den Soll-Mieten abgleichen</div></div>
+    <label class="btn-primary" style="display:inline-flex;align-items:center;">
+      CSV importieren <input type="file" accept=".csv" style="display:none;" onchange="handleCsvUpload(event)">
+    </label>
+  </div>
+
+  <div class="section-title">Offene Zahlungen (${offen.length})</div>
+  <div class="card" style="margin-bottom:24px;">
+    <table>
+      <thead><tr><th>Datum</th><th>Betrag</th><th>Verwendungszweck</th><th>Absender</th><th>Zuordnen</th></tr></thead>
+      <tbody>
+      ${offen.length===0? `<tr><td colspan="5" class="empty">Keine offenen Zahlungen – alles zugeordnet oder noch nichts importiert</td></tr>` :
+        offen.map(z=>`
+        <tr class="rowhover">
+          <td>${fmtDate(z.datum)}</td>
+          <td><b>${fmtMoney(z.betrag)}</b></td>
+          <td style="max-width:260px;">${esc(z.verwendungszweck||'')}</td>
+          <td>${esc(z.absender||'')}</td>
+          <td>
+            <select onchange="assignZahlung('${z.id}', this.value)" style="width:220px;">
+              <option value="">– Vertrag wählen –</option>
+              ${aktiveVertraege().map(v=>`<option value="${v.id}">${esc(mieterName(v.mieter_id))} · ${esc(einheitLabel(v.einheit_id))}</option>`).join('')}
+            </select>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section-title">Soll/Ist-Abgleich aktive Verträge (aktueller Monat)</div>
+  <div class="card" style="margin-bottom:24px;">
+    <table>
+      <thead><tr><th>Mieter</th><th>Einheit</th><th>Soll (Kalt+NK)</th><th>Bezahlt diesen Monat</th><th>Status</th></tr></thead>
+      <tbody>
+      ${aktiveVertraege().length===0? `<tr><td colspan="5" class="empty">Keine aktiven Verträge</td></tr>` :
+        aktiveVertraege().map(v=>{
+          const soll = Number(v.kaltmiete||0)+Number(v.nk_vorauszahlung||0);
+          const thisMonth = new Date().toISOString().slice(0,7);
+          const bezahlt = STATE.zahlungen.filter(z=>z.vertrag_id===v.id && z.datum.slice(0,7)===thisMonth && z.status==='zugeordnet').reduce((s,z)=>s+Number(z.betrag),0);
+          let badge;
+          const heute = new Date().getDate();
+          if(bezahlt >= soll) badge = '<span class="badge badge-ok">bezahlt</span>';
+          else if(heute > v.zahlungsziel_tag) badge = '<span class="badge badge-danger">überfällig</span>';
+          else badge = '<span class="badge badge-warn">ausstehend</span>';
+          return `<tr class="rowhover">
+            <td>${esc(mieterName(v.mieter_id))}</td>
+            <td>${esc(einheitLabel(v.einheit_id))}</td>
+            <td>${fmtMoney(soll)}</td>
+            <td>${fmtMoney(bezahlt)}</td>
+            <td>${badge}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section-title">Zugeordnete Zahlungen (${zugeordnet.length})</div>
+  <div class="card">
+    <table>
+      <thead><tr><th>Datum</th><th>Betrag</th><th>Vertrag</th><th></th></tr></thead>
+      <tbody>
+      ${zugeordnet.length===0? `<tr><td colspan="4" class="empty">Noch keine zugeordneten Zahlungen</td></tr>` :
+        zugeordnet.slice(0,50).map(z=>{
+          const v = STATE.vertraege.find(x=>x.id===z.vertrag_id);
+          return `<tr class="rowhover">
+            <td>${fmtDate(z.datum)}</td>
+            <td>${fmtMoney(z.betrag)}</td>
+            <td>${v? esc(mieterName(v.mieter_id))+' · '+esc(einheitLabel(v.einheit_id)) : '–'}</td>
+            <td style="text-align:right;"><button class="btn-ghost btn-sm" onclick="unassignZahlung('${z.id}')">Zuordnung lösen</button></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function handleCsvUpload(evt){
+  const file = evt.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    const text = e.target.result;
+    const delim = text.includes(';') ? ';' : ',';
+    const lines = text.split(/\r?\n/).filter(l=>l.trim().length>0);
+    const headers = lines[0].split(delim).map(h=>h.trim().replace(/^"|"$/g,''));
+    const rows = lines.slice(1).map(l=>{
+      const cells = l.split(delim).map(c=>c.trim().replace(/^"|"$/g,''));
+      const obj = {};
+      headers.forEach((h,i)=> obj[h]=cells[i]);
+      return obj;
+    });
+    STATE.csvRows = rows;
+    openCsvMappingModal(headers);
+  };
+  reader.readAsText(file, 'UTF-8');
+  evt.target.value = '';
+}
+
+function openCsvMappingModal(headers){
+  const opts = headers.map(h=>`<option value="${esc(h)}">${esc(h)}</option>`).join('');
+  const body = `
+    <div class="helptext" style="margin-bottom:14px;">${STATE.csvRows.length} Zeilen erkannt. Ordne die Spalten deines Kontoauszugs zu:</div>
+    <div class="field"><label>Datum-Spalte</label><select id="map-datum">${opts}</select></div>
+    <div class="field"><label>Betrag-Spalte</label><select id="map-betrag">${opts}</select></div>
+    <div class="field"><label>Verwendungszweck-Spalte</label><select id="map-zweck">${opts}</select></div>
+    <div class="field"><label>Absender/Auftraggeber-Spalte (optional)</label><select id="map-absender"><option value="">– keine –</option>${opts}</select></div>
+  `;
+  const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="importCsv()">Importieren</button>`;
+  openModal('Spalten zuordnen', body, foot);
+}
+
+async function importCsv(){
+  const dCol = document.getElementById('map-datum').value;
+  const bCol = document.getElementById('map-betrag').value;
+  const zCol = document.getElementById('map-zweck').value;
+  const aCol = document.getElementById('map-absender').value;
+
+  let imported = 0, autoMatched = 0;
+  for(const row of STATE.csvRows){
+    let datum = parseGermanDate(row[dCol]);
+    let betrag = parseGermanNumber(row[bCol]);
+    if(!datum || isNaN(betrag) || betrag<=0) continue; // nur Eingänge importieren
+    const zweck = row[zCol]||'';
+    const absender = aCol? (row[aCol]||'') : '';
+
+    // Auto-Matching: Nachname im Verwendungszweck/Absender suchen + Betrag grob passend
+    let matchVertrag = null;
+    for(const v of aktiveVertraege()){
+      const m = STATE.mieter.find(x=>x.id===v.mieter_id);
+      const nn = (m?.nachname||'').toLowerCase();
+      const firma = (m?.firma||'').toLowerCase();
+      const haystack = (zweck+' '+absender).toLowerCase();
+      const soll = Number(v.kaltmiete||0)+Number(v.nk_vorauszahlung||0);
+      const nameMatch = (nn && nn.length>2 && haystack.includes(nn)) || (firma && firma.length>2 && haystack.includes(firma));
+      const betragMatch = Math.abs(betrag - soll) < 0.01;
+      if(nameMatch && betragMatch){ matchVertrag = v; break; }
+    }
+
+    const row_ = {
+      datum, betrag, verwendungszweck: zweck, absender,
+      vertrag_id: matchVertrag? matchVertrag.id : null,
+      status: matchVertrag? 'zugeordnet' : 'offen'
+    };
+    const saved = await dbInsert('zahlungen', row_);
+    STATE.zahlungen.unshift(saved);
+    imported++;
+    if(matchVertrag) autoMatched++;
+  }
+  closeModal();
+  showToast(`${imported} Zahlungen importiert, ${autoMatched} automatisch zugeordnet`);
+  renderPage();
+}
+
+function parseGermanDate(s){
+  if(!s) return null;
+  s = s.trim();
+  let m = s.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  if(m) return `${m[3]}-${m[2]}-${m[1]}`;
+  m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(m) return `${m[1]}-${m[2]}-${m[3]}`;
+  return null;
+}
+function parseGermanNumber(s){
+  if(s==null) return NaN;
+  s = String(s).trim().replace(/\./g,'').replace(',','.');
+  return parseFloat(s);
+}
+
+async function assignZahlung(id, vertragId){
+  if(!vertragId) return;
+  await dbUpdate('zahlungen', id, {vertrag_id:vertragId, status:'zugeordnet'});
+  const z = STATE.zahlungen.find(x=>x.id===id);
+  z.vertrag_id = vertragId; z.status='zugeordnet';
+  showToast('Zahlung zugeordnet'); renderPage();
+}
+async function unassignZahlung(id){
+  await dbUpdate('zahlungen', id, {vertrag_id:null, status:'offen'});
+  const z = STATE.zahlungen.find(x=>x.id===id);
+  z.vertrag_id = null; z.status='offen';
+  showToast('Zuordnung gelöst'); renderPage();
+}
+
+/* ============================================================
+   EINSTELLUNGEN
+   ============================================================ */
+function renderEinstellungen(){
+  return `
+  <div class="pagehead"><div><h1>Einstellungen</h1><div class="desc">Kostenarten-Vorlagen und Systeminfo</div></div></div>
+  <div class="section-title">Globale Kostenarten-Vorlage</div>
+  <div class="card" style="margin-bottom:24px;">
+    <table>
+      <thead><tr><th>Kostenart</th><th>Standard-Verteilerschlüssel</th><th>Heizkosten-relevant</th></tr></thead>
+      <tbody>
+      ${STATE.kostenarten.map(k=>`<tr class="rowhover">
+        <td>${esc(k.name)}</td>
+        <td>${k.standard_verteilerschluessel}</td>
+        <td>${k.ist_heizkosten? '<span class="badge badge-warn">ja</span>':'–'}</td>
+      </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+  <div class="card card-pad">
+    <b>Hinweis Heizkostenverteilung:</b>
+    <p style="color:var(--ink-soft);">Nach der Heizkostenverordnung müssen 50–70% der Heizkosten verbrauchsabhängig verteilt werden, der Rest nach Fläche. Der Anteil wird pro Objekt unter "Objekte → Bearbeiten" eingestellt (Standard: 70% Verbrauch). Die eigentliche Berechnung der Nebenkostenabrechnung folgt in der nächsten Ausbaustufe – Zähler und Zählerstände werden jetzt schon zentral erfasst, damit nichts nachträglich gesammelt werden muss.</p>
+  </div>`;
+}
+
+/* ============================================================
+   START
+   ============================================================ */
+loadAll();
+</script>
+</body>
+</html>
