@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
     --bg:#F5F3EC;
@@ -224,7 +225,8 @@
     <div class="navitem" data-page="zahlungen"><span class="n">07</span> Zahlungsabgleich</div>
     <div class="navitem" data-page="dokumente"><span class="n">08</span> Dokumente</div>
     <div class="navitem" data-page="berichte"><span class="n">09</span> Berichte</div>
-    <div class="navitem" data-page="einstellungen"><span class="n">10</span> Einstellungen</div>
+    <div class="navitem" data-page="import"><span class="n">10</span> Datenimport</div>
+    <div class="navitem" data-page="einstellungen"><span class="n">11</span> Einstellungen</div>
     <div class="navitem" onclick="handleLogout()" style="margin-top:auto;border-top:1px solid rgba(255,255,255,0.12);padding-top:14px;"><span class="n">⏻</span> Abmelden</div>
   </nav>
   <main id="main"></main>
@@ -282,10 +284,14 @@ let STATE = {
   nebenkostenTab: 'abrechnungen',
   dokumenteObjektFilter: '',
   csvRows: null,
-  csvMapping: {}
+  csvMapping: {},
+  importRohdaten: null,
+  importSpalten: null,
+  importMapping: {},
+  importPlan: null
 };
 
-const EINHEIT_TYPEN = ['Wohnung','Garage','Werbetafel'];
+const EINHEIT_TYPEN = ['Wohnung','Garage','Werbetafel','Gewerbe'];
 const ZAEHLER_TYPEN = ['Heizung','Kaltwasser','Warmwasser','Strom','Sonstiges'];
 const KOMM_TYPEN = ['Anruf','E-Mail','Brief','Persönlich','Sonstiges'];
 const DOK_KATEGORIEN = ['Mietvertrag','Rechnung','Protokoll','Versicherung','Korrespondenz','Sonstiges'];
@@ -375,7 +381,6 @@ document.querySelectorAll('.navitem').forEach(n=>n.addEventListener('click', ()=
 function fmtMoney(n){ return (n==null?0:Number(n)).toLocaleString('de-DE',{style:'currency',currency:'EUR'}); }
 function fmtDate(d){ if(!d) return '–'; const [y,m,day]=d.split('-'); return `${day}.${m}.${y}`; }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
-function uid(){ return 'id'+Math.random().toString(36).slice(2,9); }
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
 function showToast(msg, isErr){
@@ -436,6 +441,7 @@ function renderPage(){
     case 'zahlungen': main.innerHTML = renderZahlungen(); break;
     case 'dokumente': main.innerHTML = renderDokumente(); break;
     case 'berichte': main.innerHTML = renderBerichte(); break;
+    case 'import': main.innerHTML = renderImport(); break;
     case 'einstellungen': main.innerHTML = renderEinstellungen(); break;
   }
 }
@@ -491,6 +497,7 @@ function renderDashboard(){
   const wohn = STATE.einheiten.filter(e=>e.typ==='Wohnung');
   const garagen = STATE.einheiten.filter(e=>e.typ==='Garage');
   const werbe = STATE.einheiten.filter(e=>e.typ==='Werbetafel');
+  const gewerbe = STATE.einheiten.filter(e=>e.typ==='Gewerbe');
   const vermietbar = STATE.einheiten.length;
   const belegt = aktiveVertraege().length;
   const quote = vermietbar? Math.round(belegt/vermietbar*100):0;
@@ -512,7 +519,7 @@ function renderDashboard(){
   </div>
 
   <div class="grid grid-5" style="margin-bottom:24px;">
-    <div class="kpi"><div class="label">Objekte</div><div class="value">${STATE.objekte.length}</div><div class="sub">${wohn.length} Wohnungen · ${garagen.length} Garagen · ${werbe.length} Werbetafeln</div></div>
+    <div class="kpi"><div class="label">Objekte</div><div class="value">${STATE.objekte.length}</div><div class="sub">${wohn.length} Wohnungen · ${garagen.length} Garagen · ${werbe.length} Werbetafeln · ${gewerbe.length} Gewerbe</div></div>
     <div class="kpi"><div class="label">Belegungsquote</div><div class="value">${quote}%</div><div class="sub">${belegt} von ${vermietbar} Einheiten vermietet</div></div>
     <div class="kpi"><div class="label">Soll-Mieteinnahmen / Monat</div><div class="value">${fmtMoney(sollMieteGesamt)}</div><div class="sub">aus ${belegt} aktiven Verträgen</div></div>
     <div class="kpi"><div class="label">Offene Zahlungen</div><div class="value" style="color:${offeneZahlungen.length?'var(--danger)':'var(--ink)'}">${offeneZahlungen.length}</div><div class="sub">${fmtMoney(offeneSumme)} nicht zugeordnet</div></div>
@@ -720,10 +727,23 @@ async function saveObjekt(id){
   closeModal(); showToast('Objekt gespeichert'); renderPage();
 }
 async function deleteObjekt(id){
-  if(!confirm('Objekt wirklich löschen? Alle zugehörigen Einheiten, Verträge und Zähler werden ebenfalls gelöscht.')) return;
+  if(!confirm('Objekt wirklich löschen? Alle zugehörigen Einheiten, Verträge, Zähler, Rechnungen, Abrechnungen, Vorgänge und Dokumente werden ebenfalls gelöscht.')) return;
   await dbDelete('objekte', id);
+  const einheitIds = new Set(STATE.einheiten.filter(e=>e.objekt_id===id).map(e=>e.id));
+  const zaehlerIds = new Set(STATE.zaehler.filter(z=>z.objekt_id===id).map(z=>z.id));
+  const abrechnungIds = new Set(STATE.abrechnungen.filter(a=>a.objekt_id===id).map(a=>a.id));
+
   STATE.objekte = STATE.objekte.filter(x=>x.id!==id);
   STATE.einheiten = STATE.einheiten.filter(x=>x.objekt_id!==id);
+  STATE.vertraege = STATE.vertraege.filter(x=>!einheitIds.has(x.einheit_id));
+  STATE.zaehler = STATE.zaehler.filter(x=>x.objekt_id!==id);
+  STATE.zaehlerstaende = STATE.zaehlerstaende.filter(x=>!zaehlerIds.has(x.zaehler_id));
+  STATE.rechnungen = STATE.rechnungen.filter(x=>x.objekt_id!==id);
+  STATE.abrechnungen = STATE.abrechnungen.filter(x=>x.objekt_id!==id);
+  STATE.abrechnungDetails = STATE.abrechnungDetails.filter(x=>!abrechnungIds.has(x.abrechnung_id));
+  STATE.vorgaenge = STATE.vorgaenge.filter(x=>x.objekt_id!==id);
+  STATE.dokumente = STATE.dokumente.filter(x=>x.objekt_id!==id);
+  STATE.kommunikation = STATE.kommunikation.filter(x=>x.objekt_id!==id);
   STATE.selectedObjektId = null;
   showToast('Objekt gelöscht'); renderPage();
 }
@@ -1180,7 +1200,7 @@ function openZaehlerForm(id){
   const z = id? STATE.zaehler.find(x=>x.id===id) : {};
   const objektOpts = STATE.objekte.map(o=>`<option value="${o.id}" ${z.objekt_id===o.id?'selected':''}>${esc(o.name)}</option>`).join('');
   const body = `
-    <div class="field"><label>Objekt</label><select id="f-objekt" onchange="refreshEinheitOptions()">${objektOpts}</select></div>
+    <div class="field"><label>Objekt</label><select id="f-objekt" onchange="refreshEinheitOptions(); refreshHauptzaehlerOptions();">${objektOpts}</select></div>
     <div class="field"><label>Einheit (leer lassen bei Allgemeinzähler fürs ganze Haus)</label>
       <select id="f-einheit-z"><option value="">– Allgemeinzähler –</option></select>
     </div>
@@ -1192,17 +1212,30 @@ function openZaehlerForm(id){
       <div class="field"><label>Standort</label><input id="f-standort" value="${esc(z.standort||'')}" placeholder="z.B. Keller, Flur"></div>
       <div class="field"><label>Einbaudatum</label><input id="f-einbau" type="date" value="${z.einbaudatum||''}"></div>
     </div>
+    <div class="field">
+      <label>Zwischenzähler von (optional)</label>
+      <select id="f-hauptzaehler"><option value="">– kein Zwischenzähler, eigenständiger Zähler –</option></select>
+      <div class="helptext">Wähle den Hauptzähler (z.B. Allgemeinstrom), von dem dieser Zähler abgezweigt ist. Der hier erfasste Verbrauch wird dann automatisch vom Hauptzähler abgezogen und direkt der zugeordneten Einheit berechnet, statt auf alle Mieter umgelegt zu werden.</div>
+    </div>
     <div class="field"><label>Notizen</label><textarea id="f-znotiz">${esc(z.notizen||'')}</textarea></div>
   `;
   const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="saveZaehler('${id||''}')">Speichern</button>`;
   openModal(id?'Zähler bearbeiten':'Neuer Zähler', body, foot);
   refreshEinheitOptions(z.einheit_id);
+  refreshHauptzaehlerOptions(z.hauptzaehler_id, id);
 }
 function refreshEinheitOptions(selected){
   const objektId = document.getElementById('f-objekt').value;
   const sel = document.getElementById('f-einheit-z');
   const eh = STATE.einheiten.filter(e=>e.objekt_id===objektId);
   sel.innerHTML = '<option value="">– Allgemeinzähler –</option>' + eh.map(e=>`<option value="${e.id}" ${selected===e.id?'selected':''}>${esc(e.bezeichnung)}</option>`).join('');
+}
+function refreshHauptzaehlerOptions(selected, eigeneId){
+  const objektId = document.getElementById('f-objekt').value;
+  const sel = document.getElementById('f-hauptzaehler');
+  const kandidaten = STATE.zaehler.filter(z=>z.objekt_id===objektId && z.id!==eigeneId);
+  sel.innerHTML = '<option value="">– kein Zwischenzähler, eigenständiger Zähler –</option>' +
+    kandidaten.map(z=>`<option value="${z.id}" ${selected===z.id?'selected':''}>${z.typ} · ${esc(z.zaehlernummer)}${z.einheit_id?' ('+esc(einheitLabel(z.einheit_id))+')':' (Allgemein)'}</option>`).join('');
 }
 async function saveZaehler(id){
   const obj = {
@@ -1212,6 +1245,7 @@ async function saveZaehler(id){
     zaehlernummer: document.getElementById('f-znr').value.trim(),
     standort: document.getElementById('f-standort').value.trim(),
     einbaudatum: document.getElementById('f-einbau').value || null,
+    hauptzaehler_id: document.getElementById('f-hauptzaehler').value || null,
     notizen: document.getElementById('f-znotiz').value.trim(),
   };
   if(!obj.zaehlernummer){ showToast('Bitte Zählernummer eingeben', true); return; }
@@ -1302,25 +1336,58 @@ function kostenartZaehlerTyp(name){
   return null;
 }
 
+// Verbrauch eines einzelnen Zählers im Zeitraum (unabhängig davon, ob er einer Einheit zugeordnet ist)
+function zaehlerVerbrauch(zaehlerId, von, bis){
+  const staende = STATE.zaehlerstaende.filter(s=>s.zaehler_id===zaehlerId).sort((a,b)=>a.datum.localeCompare(b.datum));
+  const vor = [...staende].reverse().find(s=>s.datum<=von);
+  const nachKandidaten = staende.filter(s=>s.datum<=bis);
+  const nach = nachKandidaten.length? nachKandidaten[nachKandidaten.length-1] : null;
+  if(vor && nach && nach.stand>=vor.stand) return nach.stand-vor.stand;
+  if(nach && !vor) return nach.stand;
+  return null;
+}
 function einheitVerbrauch(einheitId, typ, von, bis){
   const zl = STATE.zaehler.filter(z=>z.einheit_id===einheitId && z.typ===typ);
   if(zl.length===0) return null;
   let total = 0, any=false;
   for(const z of zl){
-    const staende = STATE.zaehlerstaende.filter(s=>s.zaehler_id===z.id).sort((a,b)=>a.datum.localeCompare(b.datum));
-    const vor = [...staende].reverse().find(s=>s.datum<=von);
-    const nachKandidaten = staende.filter(s=>s.datum<=bis);
-    const nach = nachKandidaten.length? nachKandidaten[nachKandidaten.length-1] : null;
-    if(vor && nach && nach.stand>=vor.stand){ total += (nach.stand-vor.stand); any=true; }
-    else if(nach && !vor){ total += nach.stand; any=true; }
+    const v = zaehlerVerbrauch(z.id, von, bis);
+    if(v!=null){ total += v; any = true; }
   }
   return any? total : null;
+}
+
+// Zwischenzähler-Abzug: Verbrauch, der über einen Zwischenzähler separat erfasst wird (z.B. Werbetafel-Strom
+// am Allgemeinstromkreis), wird von der Gemeinschaftsverteilung abgezogen und direkt der betroffenen Einheit
+// zugeordnet – statt auf alle Mieter umgelegt zu werden.
+function zwischenzaehlerAbzug(objektId, kostenartName, gesamtBetrag, von, bis){
+  const zTyp = kostenartZaehlerTyp(kostenartName);
+  let abzug = 0;
+  const details = [];
+  if(!zTyp) return {abzug, details};
+  const hauptzaehlerListe = STATE.zaehler.filter(z=>z.objekt_id===objektId && z.typ===zTyp && !z.einheit_id);
+  for(const haupt of hauptzaehlerListe){
+    const zwischenzaehler = STATE.zaehler.filter(z=>z.hauptzaehler_id===haupt.id);
+    for(const zz of zwischenzaehler){
+      const hauptVerbrauch = zaehlerVerbrauch(haupt.id, von, bis);
+      const subVerbrauch = zaehlerVerbrauch(zz.id, von, bis);
+      if(hauptVerbrauch>0 && subVerbrauch!=null && subVerbrauch>0){
+        const betragSub = round2(gesamtBetrag*(subVerbrauch/hauptVerbrauch));
+        const vertragZz = zz.einheit_id? vertragFuerEinheit(zz.einheit_id) : null;
+        if(vertragZz){
+          abzug += betragSub;
+          details.push({vertrag_id:vertragZz.id, betrag:betragSub, zaehlernummer:zz.zaehlernummer, verbrauch:subVerbrauch});
+        }
+      }
+    }
+  }
+  return {abzug, details};
 }
 
 async function generateAbrechnung(objektId, von, bis){
   if(!objektId || !von || !bis){ showToast('Bitte Objekt und Zeitraum wählen', true); return; }
   const objekt = STATE.objekte.find(o=>o.id===objektId);
-  const einheitenObjekt = STATE.einheiten.filter(e=>e.objekt_id===objektId && e.typ==='Wohnung');
+  const einheitenObjekt = STATE.einheiten.filter(e=>e.objekt_id===objektId && (e.typ==='Wohnung' || e.typ==='Gewerbe'));
   const gesamtTageZeitraum = Math.round((new Date(bis)-new Date(von))/86400000)+1;
 
   let anteile = [];
@@ -1370,9 +1437,20 @@ async function generateAbrechnung(objektId, von, bis){
     gesamtBetragProKostenart[k.id] = gesamtBetrag;
     if(gesamtBetrag<=0) continue;
 
+    // Zwischenzähler (z.B. Werbetafel-Strom am Allgemeinstromkreis): Verbrauch direkt der Einheit zuordnen,
+    // Betrag von der Gemeinschaftsverteilung abziehen.
+    const {abzug: subAbzug, details: subDetails} = zwischenzaehlerAbzug(objektId, k.name, gesamtBetrag, von, bis);
+    for(const sd of subDetails){
+      neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:sd.vertrag_id, kostenart_id:k.id, betrag:round2(sd.betrag),
+        anteil_beschreibung:`Zwischenzähler ${sd.zaehlernummer}: ${sd.verbrauch} Einh. direkt zugeordnet, nicht auf andere Mieter umgelegt`,
+        ist_vorauszahlung:false, ist_ergebnis_zeile:false});
+    }
+    const gesamtBetragNachSub = Math.max(0, gesamtBetrag - subAbzug);
+    gesamtBetragProKostenart[k.id] = gesamtBetragNachSub;
+
     if(k.ist_heizkosten){
       const co2Abzug = co2VermieterAbzug(rechnungenKa, von, bis);
-      const gesamtBetragVerteilbar = Math.max(0, gesamtBetrag - co2Abzug);
+      const gesamtBetragVerteilbar = Math.max(0, gesamtBetragNachSub - co2Abzug);
       gesamtBetragProKostenart[k.id] = gesamtBetragVerteilbar;
       const verbrauchAnteil = (objekt.heizkosten_verbrauch_anteil||70)/100;
       const flaechenAnteil = 1-verbrauchAnteil;
@@ -1391,7 +1469,7 @@ async function generateAbrechnung(objektId, von, bis){
       }
     } else if(schluessel==='personen'){
       for(const a of anteile){
-        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(gesamtBetrag*personenAnteil(a)),
+        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(gesamtBetragNachSub*personenAnteil(a)),
           anteil_beschreibung:`${a.vertrag.personenzahl||1} Pers. · ${a.tage} Tage`, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
       }
     } else if(schluessel==='verbrauch'){
@@ -1400,7 +1478,7 @@ async function generateAbrechnung(objektId, von, bis){
       const gesamtVerbrauch = verbraeuche.reduce((s,x)=>s+(x.v||0),0);
       for(const {a,v} of verbraeuche){
         let betrag, beschr;
-        if(gesamtVerbrauch>0 && v!=null){ betrag = gesamtBetrag*(v/gesamtVerbrauch); beschr = `${v} Verbrauchseinh.`; }
+        if(gesamtVerbrauch>0 && v!=null){ betrag = gesamtBetragNachSub*(v/gesamtVerbrauch); beschr = `${v} Verbrauchseinh.`; }
         else { betrag = gesamtBetrag*m2Anteil(a); beschr = 'kein Zähler erfasst, nach Fläche'; warnungen.push(`${a.einheit.bezeichnung}: keine Zählerablesung für "${k.name}" im Zeitraum gefunden – Kosten wurden ersatzweise nach Fläche verteilt.`); }
         neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(betrag),
           anteil_beschreibung:beschr, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
@@ -1459,7 +1537,7 @@ async function generateAbrechnung(objektId, von, bis){
   const fristDatum = new Date(bis); fristDatum.setFullYear(fristDatum.getFullYear()+1);
   const fristVorgang = await dbInsert('vorgaenge', {
     titel: `Nebenkostenabrechnung ${objekt.name} (${fmtDate(von)}–${fmtDate(bis)}) versenden`,
-    kategorie: 'Nebenkosten', objekt_id: objektId, prioritaet:'hoch', status:'offen',
+    kategorie: 'Nebenkosten', objekt_id: objektId, abrechnung_id: abrechnung.id, prioritaet:'hoch', status:'offen',
     faelligkeit: fristDatum.toISOString().slice(0,10),
     notizen: 'Gesetzliche Frist: 12 Monate nach Ende des Abrechnungszeitraums (§ 556 Abs. 3 BGB). Danach sind Nachforderungen ausgeschlossen.'
   });
@@ -1767,10 +1845,11 @@ function openAbrechnungForm(){
 }
 
 async function deleteAbrechnung(id){
-  if(!confirm('Abrechnung wirklich löschen?')) return;
+  if(!confirm('Abrechnung wirklich löschen? Der zugehörige Fristen-Vorgang wird ebenfalls entfernt.')) return;
   await dbDelete('abrechnungen', id);
   STATE.abrechnungen = STATE.abrechnungen.filter(x=>x.id!==id);
   STATE.abrechnungDetails = STATE.abrechnungDetails.filter(x=>x.abrechnung_id!==id);
+  STATE.vorgaenge = STATE.vorgaenge.filter(x=>x.abrechnung_id!==id);
   showToast('Abrechnung gelöscht'); renderPage();
 }
 
@@ -2369,6 +2448,303 @@ function renderBerichte(){
 /* ============================================================
    EINSTELLUNGEN
    ============================================================ */
+/* ============================================================
+   DATENIMPORT (Excel/CSV → Objekte, Einheiten, Mieter, Verträge)
+   ============================================================ */
+function normStr(s){ return (s==null?'':String(s)).trim().toLowerCase(); }
+
+function parseDatumFlexibel(v){
+  if(v==null || v==='') return null;
+  if(v instanceof Date) return v.toISOString().slice(0,10);
+  const s = String(v).trim();
+  const m = s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+  if(m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  const m2 = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if(m2) return s.slice(0,10);
+  return null;
+}
+function guessEinheitTyp(raw){
+  const s = normStr(raw);
+  if(!s) return null;
+  if(s.includes('wohn')) return 'Wohnung';
+  if(s.includes('stellplatz')||s.includes('garage')||s.includes('parkplatz')) return 'Garage';
+  if(s.includes('gewerbe')||s.includes('büro')||s.includes('laden')||s.includes('praxis')||s.includes('office')||s.includes('spielhalle')) return 'Gewerbe';
+  if(s.includes('werbe')||s.includes('plakat')) return 'Werbetafel';
+  return null;
+}
+function splitName(voll){
+  const teile = voll.trim().split(/\s+/);
+  if(teile.length===1) return {vorname:'', nachname:teile[0]};
+  return {vorname:teile.slice(0,-1).join(' '), nachname:teile[teile.length-1]};
+}
+
+function renderImport(){
+  if(STATE.importPlan) return renderImportVorschau();
+  if(STATE.importRohdaten) return renderImportMapping();
+  return `
+  <div class="pagehead"><div><h1>Datenimport</h1><div class="desc">Bestehende Objekte, Einheiten, Mieter und Verträge aus Excel/CSV übernehmen – ohne Duplikate</div></div></div>
+  <div class="card card-pad">
+    <p>Lade deine Bestandsliste als Excel- (.xlsx) oder CSV-Datei hoch – egal aus welcher Software sie stammt. Im nächsten Schritt ordnest du einmalig die Spalten zu.</p>
+    <label class="dropzone" style="display:block;">📊 Datei hier auswählen<input type="file" accept=".xlsx,.xls,.csv" style="display:none;" onchange="handleImportFileUpload(event)"></label>
+    <div class="helptext">Objekte, Einheiten und Mieter, die schon im System sind (gleiche Adresse/Bezeichnung/Name), werden automatisch erkannt und wiederverwendet – nur wirklich neue Daten werden dir vor dem Import zur Bestätigung angezeigt.</div>
+  </div>`;
+}
+
+function handleImportFileUpload(evt){
+  const file = evt.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    try{
+      const wb = XLSX.read(e.target.result, {type:'array', cellDates:true});
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rohZeilen = XLSX.utils.sheet_to_json(sheet, {header:1, raw:true, defval:''});
+      let headerIdx = 0;
+      for(let i=0;i<Math.min(10, rohZeilen.length);i++){
+        const nonEmptyStrings = rohZeilen[i].filter(c=>typeof c==='string' && c.trim().length>0).length;
+        if(nonEmptyStrings>=3){ headerIdx = i; break; }
+      }
+      let rows = XLSX.utils.sheet_to_json(sheet, {range: headerIdx, defval:'', raw:true});
+      rows = rows.filter(r=>Object.values(r).some(v=>v!==''&&v!=null));
+      if(rows.length===0){ showToast('Keine Datenzeilen in der Datei gefunden', true); return; }
+      STATE.importSpalten = Object.keys(rows[0]);
+      STATE.importRohdaten = rows;
+      renderPage();
+    }catch(err){ showToast('Datei konnte nicht gelesen werden: '+err.message, true); }
+  };
+  reader.readAsArrayBuffer(file);
+  evt.target.value = '';
+}
+
+function renderImportMapping(){
+  const spalten = STATE.importSpalten;
+  const raten = (kandidaten)=> spalten.find(s=>kandidaten.some(k=>normStr(s)===normStr(k))) || spalten.find(s=>kandidaten.some(k=>normStr(s).includes(normStr(k)))) || '';
+  const opts = (sel)=> `<option value="">– nicht vorhanden –</option>` + spalten.map(s=>`<option value="${esc(s)}" ${s===sel?'selected':''}>${esc(s)}</option>`).join('');
+
+  const guess = {
+    strasse: raten(['Straße','Strasse']), hausnummer: raten(['Hausnummer','Hnr']),
+    plz: raten(['PLZ']), ort: raten(['Ort']),
+    einheit: raten(['Einheit']), typ: raten(['Art der Einheit','Typ der Einheit','Typ']),
+    flaeche: raten(['Wohnfläche','Fläche']), nutzflaeche: raten(['Nutzfläche']), zimmer: raten(['Anzahl Zimmer','Zimmer']),
+    mietername: raten(['Mietername','Mieter']), mietbeginn: raten(['Mietbeginn','Beginn']), mietende: raten(['Mietende','Ende']),
+    kaltmiete: raten(['Kaltmiete (netto)','Kaltmiete']),
+  };
+  const belegt = Object.values(guess).filter(Boolean);
+  const nkKandidaten = spalten.filter(s=>!belegt.includes(s) && /kosten/i.test(s));
+
+  return `
+  <div class="pagehead"><div><h1>Datenimport – Spalten zuordnen</h1><div class="desc">${STATE.importRohdaten.length} Zeilen erkannt. Die Zuordnung ist bereits geraten – bitte prüfen.</div></div></div>
+  <div class="card card-pad">
+    <div class="section-title">Objekt</div>
+    <div class="field-row-3">
+      <div class="field req"><label>Straße</label><select id="map-strasse">${opts(guess.strasse)}</select></div>
+      <div class="field"><label>Hausnummer</label><select id="map-hausnummer">${opts(guess.hausnummer)}</select></div>
+      <div class="field"><label>PLZ</label><select id="map-plz">${opts(guess.plz)}</select></div>
+    </div>
+    <div class="field"><label>Ort</label><select id="map-ort">${opts(guess.ort)}</select></div>
+
+    <div class="section-title">Einheit</div>
+    <div class="field-row">
+      <div class="field req"><label>Bezeichnung (z.B. "1. OG links")</label><select id="map-einheit">${opts(guess.einheit)}</select></div>
+      <div class="field"><label>Einheitstyp (Wohnung/Garage/Gewerbe/Werbetafel)</label><select id="map-typ">${opts(guess.typ)}</select></div>
+    </div>
+    <div class="field-row-3">
+      <div class="field"><label>Wohnfläche</label><select id="map-flaeche">${opts(guess.flaeche)}</select></div>
+      <div class="field"><label>Nutzfläche (falls Gewerbe)</label><select id="map-nutzflaeche">${opts(guess.nutzflaeche)}</select></div>
+      <div class="field"><label>Zimmer</label><select id="map-zimmer">${opts(guess.zimmer)}</select></div>
+    </div>
+
+    <div class="section-title">Mietvertrag</div>
+    <div class="field"><label>Mietername (leer lassen = keine Vertragszeile, nur Einheit)</label><select id="map-mietername">${opts(guess.mietername)}</select></div>
+    <div class="field-row-3">
+      <div class="field"><label>Mietbeginn</label><select id="map-mietbeginn">${opts(guess.mietbeginn)}</select></div>
+      <div class="field"><label>Mietende (leer = läuft aktuell)</label><select id="map-mietende">${opts(guess.mietende)}</select></div>
+      <div class="field"><label>Kaltmiete</label><select id="map-kaltmiete">${opts(guess.kaltmiete)}</select></div>
+    </div>
+
+    <div class="section-title">Nebenkosten-Vorauszahlung</div>
+    <div class="helptext" style="margin-bottom:8px;">Hake alle Spalten an, die zusammen die monatliche NK-Vorauszahlung ergeben (wird addiert).</div>
+    ${spalten.map(s=>`<label class="checkrow" style="margin-bottom:4px;"><input type="checkbox" class="nk-spalte-check" value="${esc(s)}" ${nkKandidaten.includes(s)?'checked':''}> ${esc(s)}</label>`).join('')}
+
+    <div style="margin-top:20px;display:flex;gap:8px;">
+      <button class="btn-outline" onclick="STATE.importRohdaten=null; STATE.importSpalten=null; renderPage();">Abbrechen</button>
+      <button class="btn-primary" onclick="confirmImportMapping()">Weiter zur Vorschau</button>
+    </div>
+  </div>`;
+}
+
+function confirmImportMapping(){
+  const val = id=>document.getElementById(id).value;
+  STATE.importMapping = {
+    strasse: val('map-strasse'), hausnummer: val('map-hausnummer'), plz: val('map-plz'), ort: val('map-ort'),
+    einheit: val('map-einheit'), typ: val('map-typ'), flaeche: val('map-flaeche'), nutzflaeche: val('map-nutzflaeche'), zimmer: val('map-zimmer'),
+    mietername: val('map-mietername'), mietbeginn: val('map-mietbeginn'), mietende: val('map-mietende'), kaltmiete: val('map-kaltmiete'),
+    nkSpalten: [...document.querySelectorAll('.nk-spalte-check:checked')].map(c=>c.value)
+  };
+  if(!STATE.importMapping.strasse || !STATE.importMapping.einheit){
+    showToast('Bitte mindestens Straße und Einheit-Bezeichnung zuordnen', true); return;
+  }
+  STATE.importPlan = berechneImportPlan();
+  renderPage();
+}
+
+function berechneImportPlan(){
+  const map = STATE.importMapping;
+  const plan = {neueObjekte:[], neueEinheiten:[], neueMieter:[], neueVertraege:[], warnungen:[], uebersprungen:0};
+  const objektCache = new Map(), einheitCache = new Map(), mieterCache = new Map();
+
+  for(const row of STATE.importRohdaten){
+    const strasseVoll = `${(row[map.strasse]||'').toString().trim()} ${map.hausnummer?(row[map.hausnummer]||'').toString().trim():''}`.trim();
+    const plz = map.plz? (row[map.plz]||'').toString().trim() : '';
+    const ort = map.ort? (row[map.ort]||'').toString().trim() : '';
+    const einheitBez = (row[map.einheit]||'').toString().trim();
+    if(!strasseVoll || !einheitBez){ plan.uebersprungen++; continue; }
+
+    const objektKey = normStr(strasseVoll)+'|'+normStr(plz);
+    let objektEintrag = objektCache.get(objektKey);
+    if(!objektEintrag){
+      const existiert = STATE.objekte.find(o=>normStr(o.strasse)===normStr(strasseVoll) && normStr(o.plz)===normStr(plz));
+      if(existiert){ objektEintrag = {istNeu:false, id:existiert.id}; }
+      else{
+        const tempId = 'neu_obj_'+objektCache.size;
+        plan.neueObjekte.push({tempId, name:strasseVoll, strasse:strasseVoll, plz, ort, heizkosten_verbrauch_anteil:70, besonderheiten:''});
+        objektEintrag = {istNeu:true, id:tempId};
+      }
+      objektCache.set(objektKey, objektEintrag);
+    }
+
+    const einheitKey = objektEintrag.id+'|'+normStr(einheitBez);
+    let einheitEintrag = einheitCache.get(einheitKey);
+    if(!einheitEintrag){
+      const existiert = !objektEintrag.istNeu? STATE.einheiten.find(e=>e.objekt_id===objektEintrag.id && normStr(e.bezeichnung)===normStr(einheitBez)) : null;
+      if(existiert){ einheitEintrag = {istNeu:false, id:existiert.id}; }
+      else{
+        const rawTyp = map.typ? row[map.typ] : '';
+        let typ = guessEinheitTyp(rawTyp);
+        if(!typ){ typ='Wohnung'; plan.warnungen.push(`"${einheitBez}" (${strasseVoll}): Typ "${rawTyp}" nicht eindeutig erkannt, als Wohnung angelegt – bitte nach dem Import prüfen.`); }
+        const flaeche = map.flaeche? Number(row[map.flaeche])||null : null;
+        const nutzflaeche = map.nutzflaeche? Number(row[map.nutzflaeche])||null : null;
+        const tempId = 'neu_eh_'+einheitCache.size;
+        plan.neueEinheiten.push({tempId, objekt_id:objektEintrag.id, typ, bezeichnung:einheitBez,
+          wohnflaeche_m2: flaeche||nutzflaeche||null, zimmer: map.zimmer? (Number(row[map.zimmer])||null): null, etage:'', notizen:''});
+        einheitEintrag = {istNeu:true, id:tempId};
+      }
+      einheitCache.set(einheitKey, einheitEintrag);
+    }
+
+    const mieterVoll = map.mietername? (row[map.mietername]||'').toString().trim() : '';
+    if(!mieterVoll) continue;
+
+    const mieterKey = normStr(mieterVoll);
+    let mieterEintrag = mieterCache.get(mieterKey);
+    if(!mieterEintrag){
+      const existiert = STATE.mieter.find(m=>normStr(m.firma)===mieterKey || normStr(`${m.vorname||''} ${m.nachname||''}`.trim())===mieterKey);
+      if(existiert){ mieterEintrag = {istNeu:false, id:existiert.id}; }
+      else{
+        const tempId = 'neu_mi_'+mieterCache.size;
+        const mehrpersonen = /,| und /i.test(mieterVoll);
+        if(mehrpersonen){ plan.neueMieter.push({tempId, firma:mieterVoll, vorname:'', nachname:'', email:'', telefon:'', notizen:'Mehrpersonen-Haushalt aus Import'}); }
+        else{ const {vorname,nachname}=splitName(mieterVoll); plan.neueMieter.push({tempId, firma:'', vorname, nachname, email:'', telefon:'', notizen:''}); }
+        mieterEintrag = {istNeu:true, id:tempId};
+      }
+      mieterCache.set(mieterKey, mieterEintrag);
+    }
+
+    const beginn = parseDatumFlexibel(map.mietbeginn? row[map.mietbeginn]:null) || todayStr();
+    const ende = parseDatumFlexibel(map.mietende? row[map.mietende]:null);
+    const kaltmiete = map.kaltmiete? (Number(row[map.kaltmiete])||0) : 0;
+    const nkSumme = (map.nkSpalten||[]).reduce((s,spalte)=>s+(Number(row[spalte])||0),0);
+    const personenzahl = mieterVoll.split(/,| und /i).length;
+
+    const vertragExistiertSchon = !einheitEintrag.istNeu && !mieterEintrag.istNeu && STATE.vertraege.some(v=>
+      v.einheit_id===einheitEintrag.id && v.mieter_id===mieterEintrag.id && v.beginn_datum===beginn);
+    if(vertragExistiertSchon){ plan.uebersprungen++; continue; }
+
+    plan.neueVertraege.push({
+      einheit_ref:einheitEintrag.id, mieter_ref:mieterEintrag.id,
+      einheit_label:`${einheitBez} (${strasseVoll})`, mieter_label:mieterVoll,
+      beginn_datum:beginn, ende_datum:ende, kaltmiete, nk_vorauszahlung:round2(nkSumme),
+      personenzahl, status: ende?'beendet':'aktiv', zahlungsziel_tag:3, sondervereinbarungen:''
+    });
+  }
+  return plan;
+}
+
+function renderImportVorschau(){
+  const plan = STATE.importPlan;
+  return `
+  <div class="pagehead"><div><h1>Datenimport – Vorschau</h1><div class="desc">Bereits vorhandene Objekte/Einheiten/Mieter werden automatisch wiederverwendet, nicht doppelt angelegt.</div></div></div>
+  ${plan.warnungen.length? `<div class="config-banner">⚠ ${plan.warnungen.length} Einheit(en) mit unsicherem Typ:<br>${plan.warnungen.map(w=>esc(w)).join('<br>')}</div>`:''}
+  <div class="grid grid-4" style="margin-bottom:24px;">
+    <div class="kpi"><div class="label">Neue Objekte</div><div class="value">${plan.neueObjekte.length}</div></div>
+    <div class="kpi"><div class="label">Neue Einheiten</div><div class="value">${plan.neueEinheiten.length}</div></div>
+    <div class="kpi"><div class="label">Neue Mieter</div><div class="value">${plan.neueMieter.length}</div></div>
+    <div class="kpi"><div class="label">Neue Verträge</div><div class="value">${plan.neueVertraege.length}</div></div>
+  </div>
+  ${plan.uebersprungen>0? `<div class="helptext" style="margin-bottom:16px;">${plan.uebersprungen} Zeile(n) übersprungen – bereits vorhanden oder ohne verwertbare Daten (z.B. Summenzeile).</div>`:''}
+
+  <div class="section-title">Neue Objekte</div>
+  <div class="card" style="margin-bottom:20px;">${plan.neueObjekte.length===0?`<div class="empty">Keine – alle bereits vorhanden</div>`:
+    `<table><thead><tr><th>Name</th><th>PLZ/Ort</th></tr></thead><tbody>${plan.neueObjekte.map(o=>`<tr><td>${esc(o.name)}</td><td>${esc(o.plz)} ${esc(o.ort)}</td></tr>`).join('')}</tbody></table>`}</div>
+
+  <div class="section-title">Neue Einheiten</div>
+  <div class="card" style="margin-bottom:20px;">${plan.neueEinheiten.length===0?`<div class="empty">Keine – alle bereits vorhanden</div>`:
+    `<table><thead><tr><th>Bezeichnung</th><th>Typ</th><th>Fläche</th></tr></thead><tbody>${plan.neueEinheiten.map(e=>`<tr><td>${esc(e.bezeichnung)}</td><td>${e.typ}</td><td>${e.wohnflaeche_m2||'–'} m²</td></tr>`).join('')}</tbody></table>`}</div>
+
+  <div class="section-title">Neue Mieter</div>
+  <div class="card" style="margin-bottom:20px;">${plan.neueMieter.length===0?`<div class="empty">Keine – alle bereits vorhanden</div>`:
+    `<table><thead><tr><th>Name</th></tr></thead><tbody>${plan.neueMieter.map(m=>`<tr><td>${esc(m.firma||(m.vorname+' '+m.nachname))}</td></tr>`).join('')}</tbody></table>`}</div>
+
+  <div class="section-title">Neue Verträge</div>
+  <div class="card" style="margin-bottom:20px;">${plan.neueVertraege.length===0?`<div class="empty">Keine neuen Verträge</div>`:
+    `<table><thead><tr><th>Einheit</th><th>Mieter</th><th>Zeitraum</th><th>Kaltmiete</th><th>NK-Vorauszahlung</th><th>Status</th></tr></thead><tbody>${plan.neueVertraege.map(v=>`<tr><td>${esc(v.einheit_label)}</td><td>${esc(v.mieter_label)}</td><td>${fmtDate(v.beginn_datum)} – ${v.ende_datum?fmtDate(v.ende_datum):'laufend'}</td><td>${fmtMoney(v.kaltmiete)}</td><td>${fmtMoney(v.nk_vorauszahlung)}</td><td>${v.status}</td></tr>`).join('')}</tbody></table>`}</div>
+
+  <div style="display:flex;gap:8px;">
+    <button class="btn-outline" onclick="STATE.importRohdaten=null; STATE.importSpalten=null; STATE.importPlan=null; renderPage();">Abbrechen</button>
+    <button class="btn-primary" onclick="fuehreImportAus()">Import jetzt ausführen</button>
+  </div>`;
+}
+
+async function fuehreImportAus(){
+  const plan = STATE.importPlan;
+  showToast('Import läuft...');
+  const idMap = {};
+
+  for(const o of plan.neueObjekte){
+    const {tempId, ...daten} = o;
+    const row = await dbInsert('objekte', daten);
+    STATE.objekte.push(row);
+    idMap[tempId] = row.id;
+  }
+  for(const e of plan.neueEinheiten){
+    const {tempId, ...daten} = e;
+    daten.objekt_id = idMap[daten.objekt_id] || daten.objekt_id;
+    const row = await dbInsert('einheiten', daten);
+    STATE.einheiten.push(row);
+    idMap[tempId] = row.id;
+  }
+  for(const m of plan.neueMieter){
+    const {tempId, ...daten} = m;
+    const row = await dbInsert('mieter', daten);
+    STATE.mieter.push(row);
+    idMap[tempId] = row.id;
+  }
+  let angelegt = 0;
+  for(const v of plan.neueVertraege){
+    const einheit_id = idMap[v.einheit_ref] || v.einheit_ref;
+    const mieter_id = idMap[v.mieter_ref] || v.mieter_ref;
+    const {einheit_ref, mieter_ref, einheit_label, mieter_label, ...daten} = v;
+    daten.einheit_id = einheit_id; daten.mieter_id = mieter_id;
+    const row = await dbInsert('vertraege', daten);
+    STATE.vertraege.push(row);
+    angelegt++;
+  }
+
+  showToast(`Import abgeschlossen: ${plan.neueObjekte.length} Objekte, ${plan.neueEinheiten.length} Einheiten, ${plan.neueMieter.length} Mieter, ${angelegt} Verträge`);
+  STATE.importRohdaten = null; STATE.importSpalten = null; STATE.importPlan = null;
+  go('objekte');
+}
+
 function renderEinstellungen(){
   return `
   <div class="pagehead"><div><h1>Einstellungen</h1><div class="desc">Kostenarten-Vorlagen und Systeminfo</div></div></div>
