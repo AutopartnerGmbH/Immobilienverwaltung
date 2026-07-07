@@ -9,6 +9,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <style>
   :root{
     --bg:#F5F3EC;
@@ -219,14 +220,13 @@
     <div class="navitem active" data-page="dashboard"><span class="n">01</span> Dashboard</div>
     <div class="navitem" data-page="objekte"><span class="n">02</span> Objekte</div>
     <div class="navitem" data-page="mieter"><span class="n">03</span> Mieter &amp; Verträge</div>
-    <div class="navitem" data-page="vorgaenge"><span class="n">04</span> Vorgänge</div>
-    <div class="navitem" data-page="zaehler"><span class="n">05</span> Zähler</div>
-    <div class="navitem" data-page="nebenkosten"><span class="n">06</span> Nebenkosten</div>
-    <div class="navitem" data-page="zahlungen"><span class="n">07</span> Zahlungsabgleich</div>
-    <div class="navitem" data-page="dokumente"><span class="n">08</span> Dokumente</div>
-    <div class="navitem" data-page="berichte"><span class="n">09</span> Berichte</div>
-    <div class="navitem" data-page="import"><span class="n">10</span> Datenimport</div>
-    <div class="navitem" data-page="einstellungen"><span class="n">11</span> Einstellungen</div>
+    <div class="navitem" data-page="zaehler"><span class="n">04</span> Zähler</div>
+    <div class="navitem" data-page="nebenkosten"><span class="n">05</span> Nebenkosten</div>
+    <div class="navitem" data-page="zahlungen"><span class="n">06</span> Zahlungsabgleich</div>
+    <div class="navitem" data-page="dokumente"><span class="n">07</span> Dokumente</div>
+    <div class="navitem" data-page="berichte"><span class="n">08</span> Berichte</div>
+    <div class="navitem" data-page="import"><span class="n">09</span> Datenimport / -export</div>
+    <div class="navitem" data-page="einstellungen"><span class="n">10</span> Einstellungen</div>
     <div class="navitem" onclick="handleLogout()" style="margin-top:auto;border-top:1px solid rgba(255,255,255,0.12);padding-top:14px;"><span class="n">⏻</span> Abmelden</div>
   </nav>
   <main id="main"></main>
@@ -288,7 +288,12 @@ let STATE = {
   importRohdaten: null,
   importSpalten: null,
   importMapping: {},
-  importPlan: null
+  importPlan: null,
+  vertraegeObjektFilter: '',
+  vertraegeStatusFilter: 'alle',
+  vertraegeZeigeAusgeblendete: false,
+  einstellungen: {},
+  einstellungenRows: []
 };
 
 const EINHEIT_TYPEN = ['Wohnung','Garage','Werbetafel','Gewerbe'];
@@ -328,7 +333,7 @@ const VORGANG_VORLAGEN = [
 async function loadAll(){
   if(!CONFIGURED) return renderPage();
   try{
-    const [ob, ei, mi, ve, ka, ok, za, zs, zh, re, vo, vt, dk, km, ab, ad] = await Promise.all([
+    const [ob, ei, mi, ve, ka, ok, za, zs, zh, re, vo, vt, dk, km, ab, ad, es] = await Promise.all([
       sb.from('objekte').select('*').order('name'),
       sb.from('einheiten').select('*').order('bezeichnung'),
       sb.from('mieter').select('*').order('nachname'),
@@ -345,6 +350,7 @@ async function loadAll(){
       sb.from('kommunikation').select('*').order('datum',{ascending:false}),
       sb.from('abrechnungen').select('*').order('erstellt_am',{ascending:false}),
       sb.from('abrechnung_details').select('*'),
+      sb.from('einstellungen').select('*'),
     ]);
     STATE.objekte = ob.data||[];
     STATE.einheiten = ei.data||[];
@@ -362,6 +368,9 @@ async function loadAll(){
     STATE.kommunikation = km.data||[];
     STATE.abrechnungen = ab.data||[];
     STATE.abrechnungDetails = ad.data||[];
+    STATE.einstellungenRows = es.data||[];
+    STATE.einstellungen = {};
+    STATE.einstellungenRows.forEach(r=>{ STATE.einstellungen[r.schluessel] = r.wert; });
   }catch(e){
     showToast('Fehler beim Laden: '+e.message, true);
   }
@@ -792,7 +801,40 @@ async function deleteEinheit(id){
 /* ============================================================
    MIETER & VERTRÄGE
    ============================================================ */
+function etagenNummer(bezeichnung){
+  const b = (bezeichnung||'').toLowerCase();
+  if(b.includes('ug')||b.includes('keller')) return -1;
+  if(b.includes('eg')) return 0;
+  const m = b.match(/(\d+)\s*\.?\s*og/);
+  if(m) return Number(m[1]);
+  if(b.includes('dg')||b.includes('dach')) return 99;
+  return 50;
+}
+function sortiereVertraegeFuerAnzeige(liste){
+  return [...liste].sort((a,b)=>{
+    const ea = STATE.einheiten.find(x=>x.id===a.einheit_id), eb = STATE.einheiten.find(x=>x.id===b.einheit_id);
+    const oa = ea? objektName(ea.objekt_id):'', ob = eb? objektName(eb.objekt_id):'';
+    if(oa!==ob) return oa.localeCompare(ob,'de');
+    const na = ea? etagenNummer(ea.bezeichnung):50, nb = eb? etagenNummer(eb.bezeichnung):50;
+    if(na!==nb) return na-nb;
+    return (ea?.bezeichnung||'').localeCompare(eb?.bezeichnung||'','de');
+  });
+}
+
 function renderMieter(){
+  const objektFilter = STATE.vertraegeObjektFilter||'';
+  const statusFilter = STATE.vertraegeStatusFilter||'alle';
+  const zeigeAusgeblendete = !!STATE.vertraegeZeigeAusgeblendete;
+
+  let liste = STATE.vertraege.filter(v=> zeigeAusgeblendete? true : !v.ausgeblendet);
+  if(objektFilter){
+    liste = liste.filter(v=>{ const e=STATE.einheiten.find(x=>x.id===v.einheit_id); return e && e.objekt_id===objektFilter; });
+  }
+  if(statusFilter!=='alle') liste = liste.filter(v=>v.status===statusFilter);
+  liste = sortiereVertraegeFuerAnzeige(liste);
+
+  const objektOpts = STATE.objekte.map(o=>`<option value="${o.id}" ${objektFilter===o.id?'selected':''}>${esc(o.name)}</option>`).join('');
+
   return `
   <div class="pagehead">
     <div><h1>Mieter &amp; Verträge</h1><div class="desc">Alle Mieter und ihre Mietverträge, inkl. Sondervereinbarungen</div></div>
@@ -801,22 +843,39 @@ function renderMieter(){
       <button class="btn-primary" onclick="openVertragForm()">+ Vertrag</button>
     </div>
   </div>
+  <div class="card card-pad" style="margin-bottom:16px;">
+    <div class="field-row-3">
+      <div class="field"><label>Objekt</label><select onchange="STATE.vertraegeObjektFilter=this.value; renderPage();"><option value="">Alle Objekte</option>${objektOpts}</select></div>
+      <div class="field"><label>Status</label>
+        <select onchange="STATE.vertraegeStatusFilter=this.value; renderPage();">
+          <option value="alle" ${statusFilter==='alle'?'selected':''}>Alle</option>
+          <option value="aktiv" ${statusFilter==='aktiv'?'selected':''}>Aktiv</option>
+          <option value="zukuenftig" ${statusFilter==='zukuenftig'?'selected':''}>Zukünftig</option>
+          <option value="beendet" ${statusFilter==='beendet'?'selected':''}>Beendet</option>
+        </select>
+      </div>
+      <div class="field"><label>&nbsp;</label><label class="checkrow" style="margin-top:9px;"><input type="checkbox" ${zeigeAusgeblendete?'checked':''} onchange="STATE.vertraegeZeigeAusgeblendete=this.checked; renderPage();"> Ausgeblendete auch anzeigen</label></div>
+    </div>
+  </div>
   <div class="card">
     <table>
       <thead><tr><th>Mieter</th><th>Einheit</th><th>Zeitraum</th><th>Kaltmiete</th><th>NK-Vorauszahlung</th><th>Status</th><th>Sondervereinbarung</th><th></th></tr></thead>
       <tbody>
-      ${STATE.vertraege.length===0? `<tr><td colspan="8" class="empty">Noch keine Verträge angelegt</td></tr>` :
-        STATE.vertraege.map(v=>`
-        <tr class="rowhover">
+      ${liste.length===0? `<tr><td colspan="8" class="empty">Keine Verträge in dieser Ansicht</td></tr>` :
+        liste.map(v=>`
+        <tr class="rowhover ${v.ausgeblendet?'style="opacity:.55;"':''}">
           <td><b>${esc(mieterName(v.mieter_id))}</b></td>
           <td>${esc(einheitLabel(v.einheit_id))}</td>
           <td>${fmtDate(v.beginn_datum)} – ${v.ende_datum?fmtDate(v.ende_datum):'laufend'}</td>
           <td>${fmtMoney(v.kaltmiete)}</td>
           <td>${fmtMoney(v.nk_vorauszahlung)}</td>
-          <td>${statusBadge(v.status)}</td>
+          <td>${statusBadge(v.status)}${v.ausgeblendet?' <span class="badge badge-muted">ausgeblendet</span>':''}</td>
           <td style="max-width:200px;color:var(--ink-soft);font-size:12.5px;">${esc(v.sondervereinbarungen||'–')}</td>
           <td style="text-align:right;white-space:nowrap;">
             <button class="btn-ghost btn-sm" onclick="openVertragForm('${v.id}')">Bearbeiten</button>
+            ${v.status==='beendet'? (v.ausgeblendet?
+              `<button class="btn-ghost btn-sm" onclick="setVertragAusgeblendet('${v.id}', false)">Einblenden</button>` :
+              `<button class="btn-ghost btn-sm" onclick="setVertragAusgeblendet('${v.id}', true)">Ausblenden</button>`) : ''}
             <button class="btn-danger btn-sm" onclick="deleteVertrag('${v.id}')">Löschen</button>
           </td>
         </tr>`).join('')}
@@ -843,6 +902,11 @@ function renderMieter(){
       </tbody>
     </table>
   </div>`;
+}
+async function setVertragAusgeblendet(id, wert){
+  await dbUpdate('vertraege', id, {ausgeblendet: wert});
+  STATE.vertraege.find(v=>v.id===id).ausgeblendet = wert;
+  showToast(wert? 'Vertrag ausgeblendet':'Vertrag wieder eingeblendet'); renderPage();
 }
 function statusBadge(s){
   if(s==='aktiv') return '<span class="badge badge-ok">aktiv</span>';
@@ -887,13 +951,25 @@ async function deleteMieter(id){
   catch(e){}
 }
 
-function openVertragForm(id){
+function openVertragForm(id, vorEinheitId, vorMieterId){
   const v = id? STATE.vertraege.find(x=>x.id===id) : {};
-  const einheitenOpts = STATE.einheiten.map(e=>`<option value="${e.id}" ${v.einheit_id===e.id?'selected':''}>${esc(einheitLabel(e.id))}</option>`).join('');
-  const mieterOpts = STATE.mieter.map(m=>`<option value="${m.id}" ${v.mieter_id===m.id?'selected':''}>${esc(mieterName(m.id))}</option>`).join('');
+  const einheitAuswahl = vorEinheitId || v.einheit_id;
+  const mieterAuswahl = vorMieterId || v.mieter_id;
+  const einheitenOpts = STATE.einheiten.map(e=>`<option value="${e.id}" ${einheitAuswahl===e.id?'selected':''}>${esc(einheitLabel(e.id))}</option>`).join('');
+  const mieterOpts = STATE.mieter.map(m=>`<option value="${m.id}" ${mieterAuswahl===m.id?'selected':''}>${esc(mieterName(m.id))}</option>`).join('');
   const body = `
-    <div class="field req"><label>Einheit</label><select id="f-einheit">${einheitenOpts||'<option>Erst Einheit anlegen</option>'}</select></div>
-    <div class="field req"><label>Mieter</label><select id="f-mieter">${mieterOpts||'<option>Erst Mieter anlegen</option>'}</select></div>
+    <div class="field req"><label>Einheit</label>
+      <div style="display:flex;gap:6px;">
+        <select id="f-einheit" style="flex:1;">${einheitenOpts||'<option value="">Erst Einheit anlegen</option>'}</select>
+        <button type="button" class="btn-outline btn-sm" onclick="openEinheitQuickAdd('${id||''}')">+ Neu</button>
+      </div>
+    </div>
+    <div class="field req"><label>Mieter</label>
+      <div style="display:flex;gap:6px;">
+        <select id="f-mieter" style="flex:1;">${mieterOpts||'<option value="">Erst Mieter anlegen</option>'}</select>
+        <button type="button" class="btn-outline btn-sm" onclick="openMieterQuickAdd('${id||''}')">+ Neu</button>
+      </div>
+    </div>
     <div class="field-row">
       <div class="field"><label>Vertragsbeginn</label><input id="f-beginn" type="date" value="${v.beginn_datum||todayStr()}"></div>
       <div class="field"><label>Vertragsende (leer = unbefristet)</label><input id="f-ende" type="date" value="${v.ende_datum||''}"></div>
@@ -917,6 +993,17 @@ function openVertragForm(id){
         <div class="helptext">Für Verteilerschlüssel "nach Personen"</div>
       </div>
     </div>
+    <div class="field">
+      <label>Umlage-Vereinbarung im Mietvertrag</label>
+      <select id="f-umlage-vereinbarung">
+        <option value="betrkv" ${v.betriebskosten_vereinbarung==='betrkv'?'selected':''}>Betriebskostenverordnung / gesetzliche Aufstellung vereinbart</option>
+        <option value="einzelaufstellung" ${v.betriebskosten_vereinbarung==='einzelaufstellung'?'selected':''}>Einzelne Kostenarten im Vertrag konkret aufgelistet</option>
+        <option value="pauschale" ${v.betriebskosten_vereinbarung==='pauschale'?'selected':''}>Nebenkostenpauschale (keine Abrechnung vorgesehen)</option>
+        <option value="keine" ${v.betriebskosten_vereinbarung==='keine'?'selected':''}>Keine Umlage vereinbart (Kaltmiete inkl. NK)</option>
+        <option value="unklar" ${(!v.betriebskosten_vereinbarung||v.betriebskosten_vereinbarung==='unklar')?'selected':''}>Nicht dokumentiert / unklar</option>
+      </select>
+      <div class="helptext">Nur bei "Betriebskostenverordnung" oder "Einzelaufstellung" ist eine Nebenkostenabrechnung rechtlich sauber durchsetzbar. Bei den anderen Optionen zeigt die Abrechnung einen Hinweis, blockiert aber nichts.</div>
+    </div>
     <div class="field"><label>Sondervereinbarungen (individuelle Absprachen mit diesem Mieter)</label>
       <textarea id="f-sonder" placeholder="z.B. zahlt keine Müllgebühr, hat eigenen Entsorgervertrag / Pauschale statt Abrechnung...">${esc(v.sondervereinbarungen||'')}</textarea>
       <div class="helptext">Wird bei der Nebenkostenabrechnung berücksichtigt.</div>
@@ -924,6 +1011,61 @@ function openVertragForm(id){
   `;
   const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="saveVertrag('${id||''}')">Speichern</button>`;
   openModal(id?'Vertrag bearbeiten':'Neuer Vertrag', body, foot);
+}
+
+function openEinheitQuickAdd(rueckkehrVertragId){
+  const objektOpts = STATE.objekte.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('');
+  const body = `
+    <div class="helptext" style="margin-bottom:12px;">Wird sofort angelegt und danach im Vertrag ausgewählt.</div>
+    <div class="field req"><label>Objekt</label><select id="qa-objekt">${objektOpts||'<option value="">Erst Objekt anlegen</option>'}</select></div>
+    <div class="field-row">
+      <div class="field"><label>Typ</label><select id="qa-typ">${EINHEIT_TYPEN.map(t=>`<option value="${t}">${t}</option>`).join('')}</select></div>
+      <div class="field req"><label>Bezeichnung</label><input id="qa-bez" placeholder="z.B. 1. OG links"></div>
+    </div>
+    <div class="field"><label>Wohnfläche (m², optional)</label><input id="qa-flaeche" type="number" step="0.1"></div>
+  `;
+  const foot = `<button class="btn-outline" onclick="openVertragForm('${rueckkehrVertragId||''}')">Zurück ohne Speichern</button><button class="btn-primary" onclick="speichereEinheitQuickAdd('${rueckkehrVertragId||''}')">Anlegen &amp; übernehmen</button>`;
+  openModal('Schnell neue Einheit anlegen', body, foot);
+}
+async function speichereEinheitQuickAdd(rueckkehrVertragId){
+  const objekt_id = document.getElementById('qa-objekt').value;
+  const bezeichnung = document.getElementById('qa-bez').value.trim();
+  if(!objekt_id || !bezeichnung){ showToast('Bitte Objekt und Bezeichnung angeben', true); return; }
+  const obj = { objekt_id, typ: document.getElementById('qa-typ').value, bezeichnung,
+    wohnflaeche_m2: document.getElementById('qa-flaeche').value? Number(document.getElementById('qa-flaeche').value): null,
+    zimmer: null, etage:'', notizen:'' };
+  const row = await dbInsert('einheiten', obj);
+  STATE.einheiten.push(row);
+  showToast('Einheit angelegt');
+  openVertragForm(rueckkehrVertragId||'', row.id, null);
+}
+
+function openMieterQuickAdd(rueckkehrVertragId){
+  const body = `
+    <div class="helptext" style="margin-bottom:12px;">Wird sofort angelegt und danach im Vertrag ausgewählt.</div>
+    <div class="field-row">
+      <div class="field"><label>Vorname</label><input id="qa-m-vn"></div>
+      <div class="field"><label>Nachname</label><input id="qa-m-nn"></div>
+    </div>
+    <div class="field"><label>Firma (statt Person, optional)</label><input id="qa-m-firma"></div>
+    <div class="field-row">
+      <div class="field"><label>E-Mail</label><input id="qa-m-email"></div>
+      <div class="field"><label>Telefon</label><input id="qa-m-tel"></div>
+    </div>
+  `;
+  const foot = `<button class="btn-outline" onclick="openVertragForm('${rueckkehrVertragId||''}')">Zurück ohne Speichern</button><button class="btn-primary" onclick="speichereMieterQuickAdd('${rueckkehrVertragId||''}')">Anlegen &amp; übernehmen</button>`;
+  openModal('Schnell neuen Mieter anlegen', body, foot);
+}
+async function speichereMieterQuickAdd(rueckkehrVertragId){
+  const vorname = document.getElementById('qa-m-vn').value.trim();
+  const nachname = document.getElementById('qa-m-nn').value.trim();
+  const firma = document.getElementById('qa-m-firma').value.trim();
+  if(!vorname && !nachname && !firma){ showToast('Bitte Name oder Firma angeben', true); return; }
+  const obj = { vorname, nachname, firma, email: document.getElementById('qa-m-email').value.trim(), telefon: document.getElementById('qa-m-tel').value.trim(), notizen:'' };
+  const row = await dbInsert('mieter', obj);
+  STATE.mieter.push(row);
+  showToast('Mieter angelegt');
+  openVertragForm(rueckkehrVertragId||'', null, row.id);
 }
 async function saveVertrag(id){
   const obj = {
@@ -937,6 +1079,7 @@ async function saveVertrag(id){
     status: document.getElementById('f-status').value,
     zahlungsziel_tag: Number(document.getElementById('f-ziel').value)||3,
     personenzahl: Number(document.getElementById('f-personen').value)||1,
+    betriebskosten_vereinbarung: document.getElementById('f-umlage-vereinbarung').value,
     sondervereinbarungen: document.getElementById('f-sonder').value.trim(),
   };
   if(!obj.einheit_id || !obj.mieter_id){ showToast('Bitte Einheit und Mieter wählen', true); return; }
@@ -1296,6 +1439,43 @@ async function saveZaehlerstand(zaehlerId){
    ============================================================ */
 function round2(n){ return Math.round(n*100)/100; }
 
+// Exakte Anzahl "Monatsäquivalente" im überlappenden Zeitraum – für jeden Kalendermonat
+// wird der tatsächliche Tagesanteil aufsummiert, statt pauschal durch 30,44 zu teilen.
+function monateGenau(vBeginn, vEnde, von, bis){
+  const start = new Date(Math.max(new Date(vBeginn), new Date(von)));
+  const endeVertrag = vEnde? new Date(vEnde) : new Date(bis);
+  const end = new Date(Math.min(endeVertrag.getTime(), new Date(bis).getTime()));
+  if(end<start) return 0;
+  let summe = 0;
+  let cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  while(cursor<=end){
+    const jahr = cursor.getFullYear(), monat = cursor.getMonth();
+    const monatsStart = new Date(jahr, monat, 1);
+    const monatsEnde = new Date(jahr, monat+1, 0);
+    const tageImMonat = monatsEnde.getDate();
+    const abschnittStart = cursor > monatsStart? cursor : monatsStart;
+    const abschnittEnde = end < monatsEnde? end : monatsEnde;
+    const tage = Math.round((abschnittEnde-abschnittStart)/86400000)+1;
+    summe += tage/tageImMonat;
+    cursor = new Date(jahr, monat+1, 1);
+  }
+  return summe;
+}
+
+// Verteilt einen Gesamtbetrag exakt auf mehrere Positionen (größte-Rest-Methode),
+// damit die Summe der Einzelbeträge nie durch Rundung von der Gesamtsumme abweicht.
+function verteileMitRestcent(zielGesamt, roheWerte){
+  if(roheWerte.length===0) return [];
+  const zielCents = Math.round(zielGesamt*100);
+  const rohCents = roheWerte.map(w=>w*100);
+  const basisCents = rohCents.map(c=>Math.floor(c));
+  let restCents = Math.max(0, zielCents - basisCents.reduce((s,c)=>s+c,0));
+  const reihenfolge = rohCents.map((c,i)=>({i, rest:c-basisCents[i]})).sort((a,b)=>b.rest-a.rest);
+  const ergebnisCents = [...basisCents];
+  for(let k=0; k<restCents; k++){ ergebnisCents[reihenfolge[k % reihenfolge.length].i]++; }
+  return ergebnisCents.map(c=>round2(c/100));
+}
+
 function overlapDays(vStart, vEnd, pStart, pEnd){
   const s = new Date(Math.max(new Date(vStart), new Date(pStart)));
   const eV = vEnd? new Date(vEnd) : new Date(pEnd);
@@ -1428,6 +1608,14 @@ async function generateAbrechnung(objektId, von, bis){
   const m2Anteil = (a)=> gesamtM2TageGesamt>0? (Number(a.einheit.wohnflaeche_m2||0)*a.tage)/gesamtM2TageGesamt : 1/anteile.length;
   const personenAnteil = (a)=> gesamtPersonenTageGesamt>0? (Number(a.vertrag.personenzahl||1)*a.tage)/gesamtPersonenTageGesamt : 1/anteile.length;
 
+  const vereinbarungsTexte = {pauschale:'Nebenkostenpauschale vereinbart', keine:'keine Umlage vereinbart', unklar:'Umlage-Vereinbarung nicht dokumentiert'};
+  anteile.forEach(a=>{
+    const vereinbarung = a.vertrag.betriebskosten_vereinbarung;
+    if(vereinbarung && vereinbarungsTexte[vereinbarung]){
+      warnungen.push(`${mieterName(a.vertrag.mieter_id)} (${a.einheit.bezeichnung}): ${vereinbarungsTexte[vereinbarung]} – eine Nebenkostenabrechnung ist hier rechtlich möglicherweise nicht durchsetzbar. Vertrag prüfen.`);
+    }
+  });
+
   for(const k of aktiveKa){
     const ok = STATE.objektKostenarten.find(x=>x.objekt_id===objektId && x.kostenart_id===k.id);
     const schluessel = ok?.verteilerschluessel_override || k.standard_verteilerschluessel;
@@ -1459,44 +1647,60 @@ async function generateAbrechnung(objektId, von, bis){
       const zTyp = kostenartZaehlerTyp(k.name) || 'Heizung';
       const verbraeuche = anteile.map(a=>({a, v: einheitVerbrauch(a.einheit.id, zTyp, von, bis)}));
       const gesamtVerbrauch = verbraeuche.reduce((s,x)=>s+(x.v||0),0);
+      const roheWerte = [], beschreibungen = [];
       for(const {a,v} of verbraeuche){
         let betrag = 0, beschr;
         if(gesamtVerbrauch>0 && v!=null){ betrag += betragVerbrauch*(v/gesamtVerbrauch); beschr = `${v} Verbrauchseinh.`; }
         else { betrag += betragVerbrauch*m2Anteil(a); beschr = 'kein Zähler erfasst, nach Fläche'; warnungen.push(`${a.einheit.bezeichnung}: keine Zählerablesung für "${k.name}" im Zeitraum gefunden – Kosten wurden ersatzweise nach Fläche verteilt.`); }
         betrag += betragFlaeche*m2Anteil(a);
-        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(betrag),
-          anteil_beschreibung:`${beschr} (${objekt.heizkosten_verbrauch_anteil}% Verbr. / ${100-objekt.heizkosten_verbrauch_anteil}% Fläche)${co2Abzug>0?' · CO2-Vermieteranteil abgezogen':''}`, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
+        roheWerte.push(betrag);
+        beschreibungen.push(`${beschr} (${objekt.heizkosten_verbrauch_anteil}% Verbr. / ${100-objekt.heizkosten_verbrauch_anteil}% Fläche)${co2Abzug>0?' · CO2-Vermieteranteil abgezogen':''}`);
       }
+      const betraege = verteileMitRestcent(gesamtBetragVerteilbar, roheWerte);
+      verbraeuche.forEach(({a}, i)=>{
+        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:betraege[i],
+          anteil_beschreibung:beschreibungen[i], ist_vorauszahlung:false, ist_ergebnis_zeile:false});
+      });
     } else if(schluessel==='personen'){
-      for(const a of anteile){
-        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(gesamtBetragNachSub*personenAnteil(a)),
+      const roheWerte = anteile.map(a=>gesamtBetragNachSub*personenAnteil(a));
+      const betraege = verteileMitRestcent(gesamtBetragNachSub, roheWerte);
+      anteile.forEach((a,i)=>{
+        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:betraege[i],
           anteil_beschreibung:`${a.vertrag.personenzahl||1} Pers. · ${a.tage} Tage`, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
-      }
+      });
     } else if(schluessel==='verbrauch'){
       const zTyp = kostenartZaehlerTyp(k.name);
       const verbraeuche = anteile.map(a=>({a, v: zTyp? einheitVerbrauch(a.einheit.id, zTyp, von, bis): null}));
       const gesamtVerbrauch = verbraeuche.reduce((s,x)=>s+(x.v||0),0);
+      const roheWerte = [], beschreibungen = [];
       for(const {a,v} of verbraeuche){
         let betrag, beschr;
         if(gesamtVerbrauch>0 && v!=null){ betrag = gesamtBetragNachSub*(v/gesamtVerbrauch); beschr = `${v} Verbrauchseinh.`; }
-        else { betrag = gesamtBetrag*m2Anteil(a); beschr = 'kein Zähler erfasst, nach Fläche'; warnungen.push(`${a.einheit.bezeichnung}: keine Zählerablesung für "${k.name}" im Zeitraum gefunden – Kosten wurden ersatzweise nach Fläche verteilt.`); }
-        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(betrag),
-          anteil_beschreibung:beschr, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
+        else { betrag = gesamtBetragNachSub*m2Anteil(a); beschr = 'kein Zähler erfasst, nach Fläche'; warnungen.push(`${a.einheit.bezeichnung}: keine Zählerablesung für "${k.name}" im Zeitraum gefunden – Kosten wurden ersatzweise nach Fläche verteilt.`); }
+        roheWerte.push(betrag); beschreibungen.push(beschr);
       }
+      const betraege = verteileMitRestcent(gesamtBetragNachSub, roheWerte);
+      verbraeuche.forEach(({a}, i)=>{
+        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:betraege[i],
+          anteil_beschreibung:beschreibungen[i], ist_vorauszahlung:false, ist_ergebnis_zeile:false});
+      });
     } else if(schluessel==='individuell'){
       // Ohne klaren Schlüssel: Verteilung nach Nutzungstagen der Einheit im Zeitraum (fairer als pauschal nach Fläche, z.B. bei einmaligen Reparaturen)
       const gesamtTage = anteile.reduce((s,a)=>s+a.tage,0);
-      for(const a of anteile){
-        const anteil = gesamtTage>0? a.tage/gesamtTage : 1/anteile.length;
-        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(gesamtBetrag*anteil),
+      const roheWerte = anteile.map(a=>{ const anteil = gesamtTage>0? a.tage/gesamtTage : 1/anteile.length; return gesamtBetragNachSub*anteil; });
+      const betraege = verteileMitRestcent(gesamtBetragNachSub, roheWerte);
+      anteile.forEach((a,i)=>{
+        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:betraege[i],
           anteil_beschreibung:`${a.tage} Nutzungstage · bitte prüfen/anpassen`, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
-      }
+      });
     } else { // m2 (Standard)
-      for(const a of anteile){
-        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(gesamtBetrag*m2Anteil(a)),
+      const roheWerte = anteile.map(a=>gesamtBetragNachSub*m2Anteil(a));
+      const betraege = verteileMitRestcent(gesamtBetragNachSub, roheWerte);
+      anteile.forEach((a,i)=>{
+        neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:betraege[i],
           anteil_beschreibung: `${a.einheit.wohnflaeche_m2||0} m² · ${a.tage} Tage`,
           ist_vorauszahlung:false, ist_ergebnis_zeile:false});
-      }
+      });
     }
   }
 
@@ -1520,10 +1724,10 @@ async function generateAbrechnung(objektId, von, bis){
   }
 
   for(const a of anteile){
-    const monate = a.tage/30.44;
+    const monate = monateGenau(a.vertrag.beginn_datum, a.vertrag.ende_datum, von, bis);
     const vz = Number(a.vertrag.nk_vorauszahlung||0)*monate;
     neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:null, betrag:round2(-vz),
-      anteil_beschreibung:`${monate.toFixed(1)} Monate NK-Vorauszahlung (Näherung)`, ist_vorauszahlung:true, ist_ergebnis_zeile:false});
+      anteil_beschreibung:`${monate.toFixed(2)} Monate NK-Vorauszahlung (tagesgenau berechnet)`, ist_vorauszahlung:true, ist_ergebnis_zeile:false});
   }
 
   for(const d of neueDetails){ d.berechneter_betrag = d.betrag; const row = await dbInsert('abrechnung_details', d); STATE.abrechnungDetails.push(row); }
@@ -1653,7 +1857,7 @@ function openRechnungForm(id, zahlungId, kiPrefill, dokumentId){
       ${(kiPrefill._kiWarnungen&&kiPrefill._kiWarnungen.length)? '<br>'+kiPrefill._kiWarnungen.map(w=>esc(w)).join('<br>') : ''}
     </div>`:''}
     <div class="field-row">
-      <div class="field req"><label>Objekt</label><select id="f-r-objekt">${objOpts||'<option>Erst Objekt anlegen</option>'}</select></div>
+      <div class="field req"><label>Objekt</label><select id="f-r-objekt">${objOpts||'<option value="">Erst Objekt anlegen</option>'}</select></div>
       <div class="field req"><label>Kostenart</label><select id="f-r-ka">${kaOpts}</select></div>
     </div>
     <div class="field-row">
@@ -1755,6 +1959,10 @@ function findKostenartIdByName(name){
 }
 
 async function analyzeInvoiceFile(file){
+  const apiKey = STATE.einstellungen.anthropic_api_key;
+  if(!apiKey){
+    throw new Error('Kein Anthropic API-Schlüssel hinterlegt. Bitte unter Einstellungen eintragen.');
+  }
   const base64 = await fileToBase64(file);
   const isPdf = file.type==='application/pdf';
   const objektListe = STATE.objekte.map(o=>`${o.name} (${o.strasse||''}, ${o.plz||''} ${o.ort||''})`).join('; ') || 'keine Objekte angelegt';
@@ -1772,7 +1980,12 @@ Falls der Leistungszeitraum nicht explizit angegeben ist, aber ein Abrechnungsja
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: {"Content-Type":"application/json"},
+    headers: {
+      "Content-Type":"application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true"
+    },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
       max_tokens: 1000,
@@ -1780,7 +1993,10 @@ Falls der Leistungszeitraum nicht explizit angegeben ist, aber ein Abrechnungsja
       messages: [{role:"user", content:[contentBlock, {type:"text", text:"Extrahiere die Rechnungsdaten als JSON gemäß Vorgabe."}]}]
     })
   });
-  if(!response.ok) throw new Error('KI-Anfrage fehlgeschlagen (HTTP '+response.status+')');
+  if(!response.ok){
+    const fehlertext = await response.text().catch(()=>'');
+    throw new Error('KI-Anfrage fehlgeschlagen (HTTP '+response.status+'): '+fehlertext.slice(0,150));
+  }
   const data = await response.json();
   const textBlock = (data.content||[]).find(c=>c.type==='text');
   if(!textBlock) throw new Error('Keine Antwort von der KI erhalten');
@@ -1833,7 +2049,7 @@ function openAbrechnungForm(){
   const objektOpts = STATE.objekte.map(o=>`<option value="${o.id}">${esc(o.name)}</option>`).join('');
   const jahr = new Date().getFullYear()-1;
   const body = `
-    <div class="field"><label>Objekt</label><select id="f-ab-objekt">${objektOpts||'<option>Erst Objekt anlegen</option>'}</select></div>
+    <div class="field"><label>Objekt</label><select id="f-ab-objekt">${objektOpts||'<option value="">Erst Objekt anlegen</option>'}</select></div>
     <div class="field-row">
       <div class="field"><label>Zeitraum von</label><input id="f-ab-von" type="date" value="${jahr}-01-01"></div>
       <div class="field"><label>Zeitraum bis</label><input id="f-ab-bis" type="date" value="${jahr}-12-31"></div>
@@ -1883,6 +2099,7 @@ function renderAbrechnungDetail(id){
         <option value="versendet" ${a.status==='versendet'?'selected':''}>Versendet</option>
       </select>
       <button class="btn-outline" onclick="exportAlleRechnungenAlsZip('${a.id}')">Alle Rechnungen exportieren</button>
+      <button class="btn-primary" onclick="erstelleAbrechnungsPdf('${a.id}')">📄 Abrechnungsschreiben (PDF)</button>
       <button class="btn-outline" onclick="window.print()">Drucken / PDF</button>
     </div>
   </div>
@@ -2010,6 +2227,71 @@ async function exportAlleRechnungenAlsZip(abrechnungId){
   URL.revokeObjectURL(url);
   const ohneBeleg = relevanteRechnungen.length - mitBeleg.length;
   showToast(`${ok} Belege exportiert${ohneBeleg>0? ` · ${ohneBeleg} Rechnung(en) ohne gespeichertes PDF`:''}`);
+}
+
+function erstelleAbrechnungsPdf(abrechnungId){
+  const a = STATE.abrechnungen.find(x=>x.id===abrechnungId);
+  if(!a){ showToast('Abrechnung nicht gefunden', true); return; }
+  const details = STATE.abrechnungDetails.filter(d=>d.abrechnung_id===abrechnungId);
+  const vertragIds = [...new Set(details.map(d=>d.vertrag_id))];
+  if(vertragIds.length===0){ showToast('Keine Positionen in dieser Abrechnung', true); return; }
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const seitenBreite = 210, randLinks = 20, randRechts = 190;
+
+  vertragIds.forEach((vid, idx)=>{
+    if(idx>0) doc.addPage();
+    const v = STATE.vertraege.find(x=>x.id===vid);
+    const rows = details.filter(d=>d.vertrag_id===vid);
+    const kostenRows = rows.filter(r=>!r.ist_vorauszahlung);
+    const vzRows = rows.filter(r=>r.ist_vorauszahlung);
+    const summeKosten = kostenRows.reduce((s,r)=>s+Number(r.betrag),0);
+    const summeVz = vzRows.reduce((s,r)=>s+Number(r.betrag),0);
+    const ergebnis = summeKosten + summeVz;
+
+    let y = 20;
+    doc.setFontSize(16); doc.text('Nebenkostenabrechnung', randLinks, y); y+=10;
+    doc.setFontSize(10); doc.setTextColor(90);
+    doc.text(`Objekt: ${objektName(a.objekt_id)}`, randLinks, y); y+=6;
+    doc.text(`Einheit: ${einheitLabel(v?.einheit_id)}`, randLinks, y); y+=6;
+    doc.text(`Mieter: ${mieterName(v?.mieter_id)}`, randLinks, y); y+=6;
+    doc.text(`Abrechnungszeitraum: ${fmtDate(a.zeitraum_von)} – ${fmtDate(a.zeitraum_bis)}`, randLinks, y); y+=10;
+
+    doc.setDrawColor(200); doc.line(randLinks, y, randRechts, y); y+=8;
+    doc.setTextColor(30); doc.setFontSize(11); doc.text('Kostenaufstellung', randLinks, y); y+=8;
+    doc.setFontSize(9); doc.setTextColor(70);
+
+    kostenRows.forEach(r=>{
+      const ka = STATE.kostenarten.find(k=>k.id===r.kostenart_id);
+      const zeilen = doc.splitTextToSize(`${ka?.name||'Kostenart'} – ${r.anteil_beschreibung||''}`, 120);
+      doc.text(zeilen, randLinks, y);
+      doc.text(fmtMoney(r.betrag), randRechts, y, {align:'right'});
+      y += 5*zeilen.length + 2;
+      if(y>260){ doc.addPage(); y=20; }
+    });
+
+    doc.setDrawColor(200); doc.line(randLinks, y, randRechts, y); y+=6;
+    doc.setFontSize(10); doc.setTextColor(30);
+    doc.text('Summe Kosten', randLinks, y); doc.text(fmtMoney(summeKosten), randRechts, y, {align:'right'}); y+=7;
+
+    vzRows.forEach(r=>{
+      doc.setFontSize(9); doc.setTextColor(70);
+      doc.text(r.anteil_beschreibung||'Vorauszahlung', randLinks, y); doc.text(fmtMoney(r.betrag), randRechts, y, {align:'right'}); y+=6;
+    });
+
+    y+=3; doc.setDrawColor(30); doc.line(randLinks, y, randRechts, y); y+=8;
+    doc.setFontSize(12); doc.setTextColor(0);
+    doc.text(ergebnis>=0? 'Nachzahlung':'Guthaben', randLinks, y);
+    doc.text(fmtMoney(Math.abs(ergebnis)), randRechts, y, {align:'right'}); y+=14;
+
+    doc.setFontSize(8); doc.setTextColor(120);
+    doc.text('Die dieser Abrechnung zugrunde liegenden Belege können auf Wunsch eingesehen werden.', randLinks, y); y+=5;
+    doc.text(`Erstellt am: ${fmtDate(todayStr())}`, randLinks, y);
+  });
+
+  doc.save(`Nebenkostenabrechnung_${objektName(a.objekt_id).replace(/[^a-zA-Z0-9]/g,'_')}_${a.zeitraum_von}_${a.zeitraum_bis}.pdf`);
+  showToast(`PDF mit ${vertragIds.length} Mieterschreiben erstellt`);
 }
 
 /* ============================================================
@@ -2482,12 +2764,42 @@ function renderImport(){
   if(STATE.importPlan) return renderImportVorschau();
   if(STATE.importRohdaten) return renderImportMapping();
   return `
-  <div class="pagehead"><div><h1>Datenimport</h1><div class="desc">Bestehende Objekte, Einheiten, Mieter und Verträge aus Excel/CSV übernehmen – ohne Duplikate</div></div></div>
+  <div class="pagehead"><div><h1>Datenimport / -export</h1><div class="desc">Bestehende Objekte, Einheiten, Mieter und Verträge übernehmen – oder eine Gesamtübersicht exportieren</div></div></div>
+
+  <div class="section-title">Export</div>
+  <div class="card card-pad" style="margin-bottom:24px;">
+    <p>Gesamtübersicht aller Mietverhältnisse als Excel-Datei herunterladen: Objekt, Einheit, Mieter, Status, Kaltmiete, NK-Vorauszahlung, Gesamtmiete.</p>
+    <button class="btn-primary" onclick="exportGesamtuebersicht()">📥 Gesamtübersicht exportieren (Excel)</button>
+  </div>
+
+  <div class="section-title">Import</div>
   <div class="card card-pad">
     <p>Lade deine Bestandsliste als Excel- (.xlsx) oder CSV-Datei hoch – egal aus welcher Software sie stammt. Im nächsten Schritt ordnest du einmalig die Spalten zu.</p>
     <label class="dropzone" style="display:block;">📊 Datei hier auswählen<input type="file" accept=".xlsx,.xls,.csv" style="display:none;" onchange="handleImportFileUpload(event)"></label>
-    <div class="helptext">Objekte, Einheiten und Mieter, die schon im System sind (gleiche Adresse/Bezeichnung/Name), werden automatisch erkannt und wiederverwendet – nur wirklich neue Daten werden dir vor dem Import zur Bestätigung angezeigt.</div>
+    <div class="helptext">Objekte, Einheiten, Zähler und Mieter, die schon im System sind (gleiche Adresse/Bezeichnung/Name), werden automatisch erkannt und wiederverwendet – nur wirklich neue Daten werden dir vor dem Import zur Bestätigung angezeigt.</div>
   </div>`;
+}
+
+function exportGesamtuebersicht(){
+  const rows = STATE.vertraege.map(v=>{
+    const e = STATE.einheiten.find(x=>x.id===v.einheit_id);
+    const o = e? STATE.objekte.find(x=>x.id===e.objekt_id) : null;
+    return {
+      'Objekt': o?.name||'', 'Einheit': e?.bezeichnung||'', 'Typ': e?.typ||'',
+      'Mieter': mieterName(v.mieter_id), 'Status': v.status,
+      'Vertragsbeginn': v.beginn_datum||'', 'Vertragsende': v.ende_datum||'',
+      'Kaltmiete (€)': Number(v.kaltmiete)||0, 'NK-Vorauszahlung (€)': Number(v.nk_vorauszahlung)||0,
+      'Gesamtmiete (€)': round2(Number(v.kaltmiete||0)+Number(v.nk_vorauszahlung||0)),
+      'Personenzahl': v.personenzahl||''
+    };
+  });
+  if(rows.length===0){ showToast('Keine Verträge zum Exportieren vorhanden', true); return; }
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [{wch:24},{wch:16},{wch:12},{wch:24},{wch:11},{wch:13},{wch:13},{wch:13},{wch:16},{wch:14},{wch:11}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Gesamtübersicht');
+  XLSX.writeFile(wb, `Bestandsuebersicht_${todayStr()}.xlsx`);
+  showToast(`Export mit ${rows.length} Verträgen erstellt`);
 }
 
 function handleImportFileUpload(evt){
@@ -2528,6 +2840,7 @@ function renderImportMapping(){
     flaeche: raten(['Wohnfläche','Fläche']), nutzflaeche: raten(['Nutzfläche']), zimmer: raten(['Anzahl Zimmer','Zimmer']),
     mietername: raten(['Mietername','Mieter']), mietbeginn: raten(['Mietbeginn','Beginn']), mietende: raten(['Mietende','Ende']),
     kaltmiete: raten(['Kaltmiete (netto)','Kaltmiete']),
+    zaehlernummer: raten(['Zählernummer','Zähler-Nr','Zaehlernummer']), zaehlertyp: raten(['Zählertyp','Zählerart']),
   };
   const belegt = Object.values(guess).filter(Boolean);
   const nkKandidaten = spalten.filter(s=>!belegt.includes(s) && /kosten/i.test(s));
@@ -2566,6 +2879,13 @@ function renderImportMapping(){
     <div class="helptext" style="margin-bottom:8px;">Hake alle Spalten an, die zusammen die monatliche NK-Vorauszahlung ergeben (wird addiert).</div>
     ${spalten.map(s=>`<label class="checkrow" style="margin-bottom:4px;"><input type="checkbox" class="nk-spalte-check" value="${esc(s)}" ${nkKandidaten.includes(s)?'checked':''}> ${esc(s)}</label>`).join('')}
 
+    <div class="section-title">Zähler (optional)</div>
+    <div class="helptext" style="margin-bottom:8px;">Falls deine Liste Zählerdaten je Einheit enthält, ordne sie hier zu – wird automatisch je Einheit angelegt.</div>
+    <div class="field-row">
+      <div class="field"><label>Zählernummer</label><select id="map-zaehlernummer">${opts(guess.zaehlernummer)}</select></div>
+      <div class="field"><label>Zählertyp (Heizung/Wasser/Strom/...)</label><select id="map-zaehlertyp">${opts(guess.zaehlertyp)}</select></div>
+    </div>
+
     <div style="margin-top:20px;display:flex;gap:8px;">
       <button class="btn-outline" onclick="STATE.importRohdaten=null; STATE.importSpalten=null; renderPage();">Abbrechen</button>
       <button class="btn-primary" onclick="confirmImportMapping()">Weiter zur Vorschau</button>
@@ -2579,6 +2899,7 @@ function confirmImportMapping(){
     strasse: val('map-strasse'), hausnummer: val('map-hausnummer'), plz: val('map-plz'), ort: val('map-ort'),
     einheit: val('map-einheit'), typ: val('map-typ'), flaeche: val('map-flaeche'), nutzflaeche: val('map-nutzflaeche'), zimmer: val('map-zimmer'),
     mietername: val('map-mietername'), mietbeginn: val('map-mietbeginn'), mietende: val('map-mietende'), kaltmiete: val('map-kaltmiete'),
+    zaehlernummer: val('map-zaehlernummer'), zaehlertyp: val('map-zaehlertyp'),
     nkSpalten: [...document.querySelectorAll('.nk-spalte-check:checked')].map(c=>c.value)
   };
   if(!STATE.importMapping.strasse || !STATE.importMapping.einheit){
@@ -2588,10 +2909,21 @@ function confirmImportMapping(){
   renderPage();
 }
 
+function guessZaehlerTypAusText(raw){
+  const s = normStr(raw);
+  if(!s) return 'Sonstiges';
+  if(s.includes('heiz')) return 'Heizung';
+  if(s.includes('warmwasser')) return 'Warmwasser';
+  if(s.includes('kaltwasser')) return 'Kaltwasser';
+  if(s.includes('wasser')) return 'Kaltwasser';
+  if(s.includes('strom')) return 'Strom';
+  return 'Sonstiges';
+}
+
 function berechneImportPlan(){
   const map = STATE.importMapping;
-  const plan = {neueObjekte:[], neueEinheiten:[], neueMieter:[], neueVertraege:[], warnungen:[], uebersprungen:0};
-  const objektCache = new Map(), einheitCache = new Map(), mieterCache = new Map();
+  const plan = {neueObjekte:[], neueEinheiten:[], neueMieter:[], neueVertraege:[], neueZaehler:[], warnungen:[], uebersprungen:0};
+  const objektCache = new Map(), einheitCache = new Map(), mieterCache = new Map(), zaehlerCache = new Map();
 
   for(const row of STATE.importRohdaten){
     const strasseVoll = `${(row[map.strasse]||'').toString().trim()} ${map.hausnummer?(row[map.hausnummer]||'').toString().trim():''}`.trim();
@@ -2630,6 +2962,24 @@ function berechneImportPlan(){
         einheitEintrag = {istNeu:true, id:tempId};
       }
       einheitCache.set(einheitKey, einheitEintrag);
+    }
+
+    if(map.zaehlernummer){
+      const zaehlernummer = (row[map.zaehlernummer]||'').toString().trim();
+      if(zaehlernummer){
+        const zaehlerKey = einheitEintrag.id+'|'+normStr(zaehlernummer);
+        if(!zaehlerCache.has(zaehlerKey)){
+          const existiertZ = !einheitEintrag.istNeu? STATE.zaehler.find(z=>z.einheit_id===einheitEintrag.id && normStr(z.zaehlernummer)===normStr(zaehlernummer)) : null;
+          if(existiertZ){ zaehlerCache.set(zaehlerKey, {istNeu:false, id:existiertZ.id}); }
+          else{
+            const rawZTyp = map.zaehlertyp? row[map.zaehlertyp] : '';
+            const ztyp = guessZaehlerTypAusText(rawZTyp);
+            const tempId = 'neu_z_'+zaehlerCache.size;
+            plan.neueZaehler.push({tempId, objekt_id:objektEintrag.id, einheit_id:einheitEintrag.id, typ:ztyp, zaehlernummer, standort:'', einbaudatum:null, notizen:''});
+            zaehlerCache.set(zaehlerKey, {istNeu:true, id:tempId});
+          }
+        }
+      }
     }
 
     const mieterVoll = map.mietername? (row[map.mietername]||'').toString().trim() : '';
@@ -2691,6 +3041,10 @@ function renderImportVorschau(){
   <div class="card" style="margin-bottom:20px;">${plan.neueEinheiten.length===0?`<div class="empty">Keine – alle bereits vorhanden</div>`:
     `<table><thead><tr><th>Bezeichnung</th><th>Typ</th><th>Fläche</th></tr></thead><tbody>${plan.neueEinheiten.map(e=>`<tr><td>${esc(e.bezeichnung)}</td><td>${e.typ}</td><td>${e.wohnflaeche_m2||'–'} m²</td></tr>`).join('')}</tbody></table>`}</div>
 
+  <div class="section-title">Neue Zähler</div>
+  <div class="card" style="margin-bottom:20px;">${plan.neueZaehler.length===0?`<div class="empty">Keine – nicht zugeordnet oder alle bereits vorhanden</div>`:
+    `<table><thead><tr><th>Zählernummer</th><th>Typ</th></tr></thead><tbody>${plan.neueZaehler.map(z=>`<tr><td>${esc(z.zaehlernummer)}</td><td>${z.typ}</td></tr>`).join('')}</tbody></table>`}</div>
+
   <div class="section-title">Neue Mieter</div>
   <div class="card" style="margin-bottom:20px;">${plan.neueMieter.length===0?`<div class="empty">Keine – alle bereits vorhanden</div>`:
     `<table><thead><tr><th>Name</th></tr></thead><tbody>${plan.neueMieter.map(m=>`<tr><td>${esc(m.firma||(m.vorname+' '+m.nachname))}</td></tr>`).join('')}</tbody></table>`}</div>
@@ -2723,6 +3077,14 @@ async function fuehreImportAus(){
     STATE.einheiten.push(row);
     idMap[tempId] = row.id;
   }
+  for(const z of plan.neueZaehler){
+    const {tempId, ...daten} = z;
+    daten.objekt_id = idMap[daten.objekt_id] || daten.objekt_id;
+    daten.einheit_id = idMap[daten.einheit_id] || daten.einheit_id;
+    const row = await dbInsert('zaehler', daten);
+    STATE.zaehler.push(row);
+    idMap[tempId] = row.id;
+  }
   for(const m of plan.neueMieter){
     const {tempId, ...daten} = m;
     const row = await dbInsert('mieter', daten);
@@ -2740,14 +3102,22 @@ async function fuehreImportAus(){
     angelegt++;
   }
 
-  showToast(`Import abgeschlossen: ${plan.neueObjekte.length} Objekte, ${plan.neueEinheiten.length} Einheiten, ${plan.neueMieter.length} Mieter, ${angelegt} Verträge`);
+  showToast(`Import abgeschlossen: ${plan.neueObjekte.length} Objekte, ${plan.neueEinheiten.length} Einheiten, ${plan.neueZaehler.length} Zähler, ${plan.neueMieter.length} Mieter, ${angelegt} Verträge`);
   STATE.importRohdaten = null; STATE.importSpalten = null; STATE.importPlan = null;
   go('objekte');
 }
 
 function renderEinstellungen(){
   return `
-  <div class="pagehead"><div><h1>Einstellungen</h1><div class="desc">Kostenarten-Vorlagen und Systeminfo</div></div></div>
+  <div class="pagehead"><div><h1>Einstellungen</h1><div class="desc">Kostenarten-Vorlagen, KI-Anbindung und Systeminfo</div></div></div>
+
+  <div class="section-title">KI-Rechnungsimport</div>
+  <div class="card card-pad" style="margin-bottom:24px;">
+    <div class="field"><label>Anthropic API-Schlüssel</label><input id="s-api-key" type="password" value="${esc(STATE.einstellungen.anthropic_api_key||'')}" placeholder="sk-ant-..."></div>
+    <div class="helptext" style="margin-bottom:12px;">Nötig für "Rechnung per KI einlesen" unter Nebenkosten → Ausgaben. Eigenen Schlüssel erstellen unter <a href="https://console.anthropic.com" target="_blank">console.anthropic.com</a> – die Nutzung wird dir dort nach Verbrauch in Rechnung gestellt (kein Abo). Der Schlüssel wird in deiner eigenen, nur für dich zugänglichen Datenbank gespeichert.</div>
+    <button class="btn-primary" onclick="speichereApiKey()">Speichern</button>
+  </div>
+
   <div class="section-title">Globale Kostenarten-Vorlage</div>
   <div class="card" style="margin-bottom:24px;">
     <table>
@@ -2765,6 +3135,14 @@ function renderEinstellungen(){
     <b>Hinweis Heizkostenverteilung:</b>
     <p style="color:var(--ink-soft);">Nach der Heizkostenverordnung müssen 50–70% der Heizkosten verbrauchsabhängig verteilt werden, der Rest nach Fläche. Der Anteil wird pro Objekt unter "Objekte → Bearbeiten" eingestellt (Standard: 70% Verbrauch). Die eigentliche Berechnung der Nebenkostenabrechnung folgt in der nächsten Ausbaustufe – Zähler und Zählerstände werden jetzt schon zentral erfasst, damit nichts nachträglich gesammelt werden muss.</p>
   </div>`;
+}
+async function speichereApiKey(){
+  const wert = document.getElementById('s-api-key').value.trim();
+  const existing = STATE.einstellungenRows.find(e=>e.schluessel==='anthropic_api_key');
+  if(existing){ await dbUpdate('einstellungen', existing.id, {wert}); existing.wert = wert; }
+  else{ const row = await dbInsert('einstellungen', {schluessel:'anthropic_api_key', wert}); STATE.einstellungenRows.push(row); }
+  STATE.einstellungen.anthropic_api_key = wert;
+  showToast('API-Schlüssel gespeichert');
 }
 
 /* ============================================================
