@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
   :root{
     --bg:#F5F3EC;
@@ -182,11 +183,33 @@
     #sidebar, .pagehead button, .pagehead select, .breadcrumb{display:none !important;}
     input.editable-amount{border:none;background:none;padding:0;-webkit-appearance:none;}
   }
+  .grid-5{grid-template-columns:repeat(5,1fr);}
+  @media(max-width:1150px){.grid-5{grid-template-columns:repeat(3,1fr);}}
+  .req label:after{content:' *';color:var(--danger);}
+  .steps-row{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:20px;}
+  .step-box{background:var(--surface);border:1px solid var(--border-soft);border-radius:10px;padding:11px 12px;font-size:12.5px;color:var(--muted);}
+  .step-box b{display:block;color:var(--ink-soft);font-size:12.5px;}
+  .step-box.step-done{border-color:#bdd3c3;background:var(--success-dim);}
+  .step-box.step-done b{color:var(--success);}
 </style>
 </head>
 <body>
 
-<div id="app">
+<div id="login-screen" style="display:none;min-height:100vh;align-items:center;justify-content:center;background:var(--bg);">
+  <div class="card card-pad" style="width:100%;max-width:340px;">
+    <div style="text-align:center;margin-bottom:20px;">
+      <div style="font-family:'Fraunces',serif;font-size:20px;font-weight:600;">Lückel Immobilien</div>
+      <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.4px;margin-top:3px;">Anmeldung erforderlich</div>
+    </div>
+    <div class="field"><label>E-Mail</label><input id="login-email" type="email" autocomplete="username"></div>
+    <div class="field"><label>Passwort</label><input id="login-password" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter') handleLogin()"></div>
+    <div id="login-error" style="color:var(--danger);font-size:12.5px;margin-bottom:10px;"></div>
+    <button class="btn-primary" style="width:100%;" onclick="handleLogin()">Anmelden</button>
+    <div class="helptext" style="margin-top:12px;">Zugangsdaten legst du einmalig in deinem Supabase-Projekt an (Authentication → Users).</div>
+  </div>
+</div>
+
+<div id="app" style="display:none;">
   <nav id="sidebar">
     <div class="brand">
       <div class="mark">Lückel Immobilien</div>
@@ -202,6 +225,7 @@
     <div class="navitem" data-page="dokumente"><span class="n">08</span> Dokumente</div>
     <div class="navitem" data-page="berichte"><span class="n">09</span> Berichte</div>
     <div class="navitem" data-page="einstellungen"><span class="n">10</span> Einstellungen</div>
+    <div class="navitem" onclick="handleLogout()" style="margin-top:auto;border-top:1px solid rgba(255,255,255,0.12);padding-top:14px;"><span class="n">⏻</span> Abmelden</div>
   </nav>
   <main id="main"></main>
 </div>
@@ -435,6 +459,34 @@ function renderConfigNotice(){
 /* ============================================================
    DASHBOARD
    ============================================================ */
+// Ampel-Prüfung: sammelt Hinweise zur Datenvollständigkeit, blockiert nichts – reine Übersicht
+function validateAll(){
+  const items = [];
+  if(STATE.objekte.length===0) items.push({type:'error', text:'Noch kein Objekt angelegt.'});
+  STATE.objekte.forEach(o=>{
+    const eh = STATE.einheiten.filter(e=>e.objekt_id===o.id);
+    if(eh.length===0) items.push({type:'warn', text:`${o.name}: noch keine Einheiten angelegt.`});
+  });
+  STATE.einheiten.filter(e=>e.typ==='Wohnung').forEach(e=>{
+    if(!e.wohnflaeche_m2) items.push({type:'error', text:`${e.bezeichnung} (${objektName(e.objekt_id)}): Wohnfläche fehlt – wichtig für die Kostenverteilung.`});
+  });
+  aktiveVertraege().forEach(v=>{
+    if(!v.kaltmiete) items.push({type:'warn', text:`${mieterName(v.mieter_id)}: Kaltmiete ist 0 oder fehlt.`});
+  });
+  STATE.objektKostenarten.forEach(ok=>{
+    const k = STATE.kostenarten.find(x=>x.id===ok.kostenart_id);
+    if(k?.ist_heizkosten && ok.verteilerschluessel_override && ok.verteilerschluessel_override!=='verbrauch'){
+      items.push({type:'warn', text:`${objektName(ok.objekt_id)}: "${k.name}" sollte verbrauchsabhängig verteilt werden (aktuell: ${ok.verteilerschluessel_override}).`});
+    }
+  });
+  const heuteD = new Date();
+  STATE.vorgaenge.filter(v=>v.status!=='erledigt' && v.faelligkeit && new Date(v.faelligkeit)<heuteD).forEach(v=>{
+    items.push({type:'error', text:`Überfällig: ${v.titel}`});
+  });
+  if(items.length===0) items.push({type:'ok', text:'Alle Mindestprüfungen erfüllt.'});
+  return {items, errors:items.filter(i=>i.type==='error').length, warns:items.filter(i=>i.type==='warn').length};
+}
+
 function renderDashboard(){
   const wohn = STATE.einheiten.filter(e=>e.typ==='Wohnung');
   const garagen = STATE.einheiten.filter(e=>e.typ==='Garage');
@@ -452,18 +504,28 @@ function renderDashboard(){
 
   const sollMieteGesamt = aktiveVertraege().reduce((s,v)=>s+Number(v.kaltmiete||0)+Number(v.nk_vorauszahlung||0),0);
   const offeneVorgaenge = STATE.vorgaenge.filter(v=>v.status!=='erledigt');
+  const pruef = validateAll();
 
   return `
   <div class="pagehead">
     <div><h1>Dashboard</h1><div class="desc">Gesamtübersicht über alle Objekte, Einheiten und offenen Posten</div></div>
   </div>
 
-  <div class="grid grid-4" style="margin-bottom:24px;">
+  <div class="grid grid-5" style="margin-bottom:24px;">
     <div class="kpi"><div class="label">Objekte</div><div class="value">${STATE.objekte.length}</div><div class="sub">${wohn.length} Wohnungen · ${garagen.length} Garagen · ${werbe.length} Werbetafeln</div></div>
     <div class="kpi"><div class="label">Belegungsquote</div><div class="value">${quote}%</div><div class="sub">${belegt} von ${vermietbar} Einheiten vermietet</div></div>
     <div class="kpi"><div class="label">Soll-Mieteinnahmen / Monat</div><div class="value">${fmtMoney(sollMieteGesamt)}</div><div class="sub">aus ${belegt} aktiven Verträgen</div></div>
     <div class="kpi"><div class="label">Offene Zahlungen</div><div class="value" style="color:${offeneZahlungen.length?'var(--danger)':'var(--ink)'}">${offeneZahlungen.length}</div><div class="sub">${fmtMoney(offeneSumme)} nicht zugeordnet</div></div>
+    <div class="kpi"><div class="label">Prüfstatus</div><div class="value" style="color:${pruef.errors?'var(--danger)':pruef.warns?'var(--warn)':'var(--success)'}">${pruef.errors?'Stop':pruef.warns?'Prüfen':'OK'}</div><div class="sub">${pruef.errors} Fehler · ${pruef.warns} Hinweise</div></div>
   </div>
+
+  ${(pruef.errors>0 || pruef.warns>0)? `
+  <div class="card card-pad" style="margin-bottom:24px;">
+    <h3 style="font-size:15px;margin-bottom:10px;">Prüfhinweise</h3>
+    ${pruef.items.filter(i=>i.type!=='ok').map(i=>`<div style="padding:6px 0;border-top:1px solid var(--border-soft);font-size:13px;display:flex;gap:8px;align-items:center;">
+      <span class="badge ${i.type==='error'?'badge-danger':'badge-warn'}">${i.type==='error'?'Stop':'Prüfen'}</span> ${esc(i.text)}
+    </div>`).join('')}
+  </div>`:''}
 
   <div class="grid" style="grid-template-columns:1.4fr 1fr; align-items:start;">
     <div class="card">
@@ -627,7 +689,7 @@ async function setSchluessel(objektId, kostenartId, wert){
 function openObjektForm(id){
   const o = id? STATE.objekte.find(x=>x.id===id) : {};
   const body = `
-    <div class="field"><label>Name des Objekts</label><input id="f-name" value="${esc(o.name||'')}" placeholder="z.B. Mendener Str. 143"></div>
+    <div class="field req"><label>Name des Objekts</label><input id="f-name" value="${esc(o.name||'')}" placeholder="z.B. Mendener Str. 143"></div>
     <div class="field-row">
       <div class="field"><label>Straße &amp; Hausnummer</label><input id="f-strasse" value="${esc(o.strasse||'')}"></div>
       <div class="field"><label>PLZ</label><input id="f-plz" value="${esc(o.plz||'')}"></div>
@@ -673,10 +735,10 @@ function openEinheitForm(objektId, einheitId){
       <div class="field"><label>Typ</label>
         <select id="f-typ">${EINHEIT_TYPEN.map(t=>`<option value="${t}" ${e.typ===t?'selected':''}>${t}</option>`).join('')}</select>
       </div>
-      <div class="field"><label>Bezeichnung</label><input id="f-bez" value="${esc(e.bezeichnung||'')}" placeholder="z.B. 1. OG links"></div>
+      <div class="field req"><label>Bezeichnung</label><input id="f-bez" value="${esc(e.bezeichnung||'')}" placeholder="z.B. 1. OG links"></div>
     </div>
     <div class="field-row-3">
-      <div class="field"><label>Wohnfläche (m²)</label><input id="f-flaeche" type="number" step="0.1" value="${e.wohnflaeche_m2||''}"></div>
+      <div class="field req"><label>Wohnfläche (m²)</label><input id="f-flaeche" type="number" step="0.1" value="${e.wohnflaeche_m2||''}"></div>
       <div class="field"><label>Zimmer</label><input id="f-zimmer" type="number" step="0.5" value="${e.zimmer||''}"></div>
       <div class="field"><label>Etage</label><input id="f-etage" value="${esc(e.etage||'')}"></div>
     </div>
@@ -810,14 +872,14 @@ function openVertragForm(id){
   const einheitenOpts = STATE.einheiten.map(e=>`<option value="${e.id}" ${v.einheit_id===e.id?'selected':''}>${esc(einheitLabel(e.id))}</option>`).join('');
   const mieterOpts = STATE.mieter.map(m=>`<option value="${m.id}" ${v.mieter_id===m.id?'selected':''}>${esc(mieterName(m.id))}</option>`).join('');
   const body = `
-    <div class="field"><label>Einheit</label><select id="f-einheit">${einheitenOpts||'<option>Erst Einheit anlegen</option>'}</select></div>
-    <div class="field"><label>Mieter</label><select id="f-mieter">${mieterOpts||'<option>Erst Mieter anlegen</option>'}</select></div>
+    <div class="field req"><label>Einheit</label><select id="f-einheit">${einheitenOpts||'<option>Erst Einheit anlegen</option>'}</select></div>
+    <div class="field req"><label>Mieter</label><select id="f-mieter">${mieterOpts||'<option>Erst Mieter anlegen</option>'}</select></div>
     <div class="field-row">
       <div class="field"><label>Vertragsbeginn</label><input id="f-beginn" type="date" value="${v.beginn_datum||todayStr()}"></div>
       <div class="field"><label>Vertragsende (leer = unbefristet)</label><input id="f-ende" type="date" value="${v.ende_datum||''}"></div>
     </div>
     <div class="field-row-3">
-      <div class="field"><label>Kaltmiete (€)</label><input id="f-kalt" type="number" step="0.01" value="${v.kaltmiete||''}"></div>
+      <div class="field req"><label>Kaltmiete (€)</label><input id="f-kalt" type="number" step="0.01" value="${v.kaltmiete||''}"></div>
       <div class="field"><label>NK-Vorauszahlung (€)</label><input id="f-nk" type="number" step="0.01" value="${v.nk_vorauszahlung||''}"></div>
       <div class="field"><label>Kaution (€)</label><input id="f-kaution" type="number" step="0.01" value="${v.kaution||''}"></div>
     </div>
@@ -1208,6 +1270,28 @@ function overlapDays(vStart, vEnd, pStart, pEnd){
   return Math.round((e-s)/(1000*60*60*24))+1;
 }
 
+// Anteiliger Betrag einer Rechnung, wenn ihr Leistungszeitraum nur teilweise in den Abrechnungszeitraum fällt
+// (z.B. Rechnung 01.10.2024–30.09.2025, Abrechnung 2025: nur 9 von 12 Monaten zählen)
+function anteiligerRechnungsbetrag(r, von, bis){
+  const invoiceStart = new Date(r.leistungszeitraum_von), invoiceEnd = new Date(r.leistungszeitraum_bis);
+  const invoiceTage = Math.round((invoiceEnd-invoiceStart)/86400000)+1;
+  if(invoiceTage<=0) return 0;
+  const overlapStart = new Date(Math.max(invoiceStart, new Date(von)));
+  const overlapEnd = new Date(Math.min(invoiceEnd, new Date(bis)));
+  if(overlapEnd<overlapStart) return 0;
+  const overlapTage = Math.round((overlapEnd-overlapStart)/86400000)+1;
+  return Number(r.betrag||0) * (overlapTage/invoiceTage);
+}
+
+// CO2-Vermieteranteil (CO2KostAufG): anteilig zum selben Zeitraum-Anteil wie die Rechnung selbst
+function co2VermieterAbzug(rechnungenKa, von, bis){
+  return rechnungenKa.reduce((s,r)=>{
+    if(!r.co2_kosten || !r.co2_vermieteranteil_prozent) return s;
+    const fraction = Number(r.betrag)>0 ? anteiligerRechnungsbetrag(r,von,bis)/Number(r.betrag) : 0;
+    return s + (Number(r.co2_kosten||0) * (Number(r.co2_vermieteranteil_prozent||0)/100)) * fraction;
+  },0);
+}
+
 function kostenartZaehlerTyp(name){
   const n = (name||'').toLowerCase();
   if(n.includes('heizung')) return 'Heizung';
@@ -1282,15 +1366,18 @@ async function generateAbrechnung(objektId, von, bis){
     const schluessel = ok?.verteilerschluessel_override || k.standard_verteilerschluessel;
     const rechnungenKa = STATE.rechnungen.filter(r=>r.objekt_id===objektId && r.kostenart_id===k.id && r.umlagefaehig!==false &&
       r.leistungszeitraum_von && r.leistungszeitraum_bis && r.leistungszeitraum_von<=bis && r.leistungszeitraum_bis>=von);
-    const gesamtBetrag = rechnungenKa.reduce((s,r)=>s+Number(r.betrag||0),0);
+    const gesamtBetrag = rechnungenKa.reduce((s,r)=>s+anteiligerRechnungsbetrag(r,von,bis),0);
     gesamtBetragProKostenart[k.id] = gesamtBetrag;
     if(gesamtBetrag<=0) continue;
 
     if(k.ist_heizkosten){
+      const co2Abzug = co2VermieterAbzug(rechnungenKa, von, bis);
+      const gesamtBetragVerteilbar = Math.max(0, gesamtBetrag - co2Abzug);
+      gesamtBetragProKostenart[k.id] = gesamtBetragVerteilbar;
       const verbrauchAnteil = (objekt.heizkosten_verbrauch_anteil||70)/100;
       const flaechenAnteil = 1-verbrauchAnteil;
-      const betragVerbrauch = gesamtBetrag*verbrauchAnteil;
-      const betragFlaeche = gesamtBetrag*flaechenAnteil;
+      const betragVerbrauch = gesamtBetragVerteilbar*verbrauchAnteil;
+      const betragFlaeche = gesamtBetragVerteilbar*flaechenAnteil;
       const zTyp = kostenartZaehlerTyp(k.name) || 'Heizung';
       const verbraeuche = anteile.map(a=>({a, v: einheitVerbrauch(a.einheit.id, zTyp, von, bis)}));
       const gesamtVerbrauch = verbraeuche.reduce((s,x)=>s+(x.v||0),0);
@@ -1300,7 +1387,7 @@ async function generateAbrechnung(objektId, von, bis){
         else { betrag += betragVerbrauch*m2Anteil(a); beschr = 'kein Zähler erfasst, nach Fläche'; warnungen.push(`${a.einheit.bezeichnung}: keine Zählerablesung für "${k.name}" im Zeitraum gefunden – Kosten wurden ersatzweise nach Fläche verteilt.`); }
         betrag += betragFlaeche*m2Anteil(a);
         neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(betrag),
-          anteil_beschreibung:`${beschr} (${objekt.heizkosten_verbrauch_anteil}% Verbr. / ${100-objekt.heizkosten_verbrauch_anteil}% Fläche)`, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
+          anteil_beschreibung:`${beschr} (${objekt.heizkosten_verbrauch_anteil}% Verbr. / ${100-objekt.heizkosten_verbrauch_anteil}% Fläche)${co2Abzug>0?' · CO2-Vermieteranteil abgezogen':''}`, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
       }
     } else if(schluessel==='personen'){
       for(const a of anteile){
@@ -1384,14 +1471,37 @@ async function generateAbrechnung(objektId, von, bis){
   renderPage();
 }
 
+function renderNebenkostenSteps(){
+  const hatStammdaten = STATE.objekte.length>0 && STATE.einheiten.length>0;
+  const hatRechnungen = STATE.rechnungen.length>0;
+  const hatEntwurf = STATE.abrechnungen.some(a=>a.status==='entwurf'||a.status==='fertig'||a.status==='versendet');
+  const hatAbschluss = STATE.abrechnungen.some(a=>a.status==='versendet');
+  const steps = [
+    {n:1, label:'Stammdaten', done:hatStammdaten},
+    {n:2, label:'Ausgaben erfassen', done:hatRechnungen},
+    {n:3, label:'Prüfung', done:hatRechnungen},
+    {n:4, label:'Entwurf berechnen', done:hatEntwurf},
+    {n:5, label:'Abschluss & Versand', done:hatAbschluss},
+  ];
+  return `<div class="steps-row">${steps.map(s=>`<div class="step-box ${s.done?'step-done':''}"><b>${s.n}. ${s.label}</b></div>`).join('')}</div>`;
+}
+
 function renderNebenkosten(){
   if(STATE.selectedAbrechnungId){ return renderAbrechnungDetail(STATE.selectedAbrechnungId); }
   const tab = STATE.nebenkostenTab || 'abrechnungen';
   return `
   <div class="pagehead">
     <div><h1>Nebenkosten</h1><div class="desc">Ausgaben erfassen und Nebenkostenabrechnungen erstellen</div></div>
-    ${tab==='ausgaben'? `<button class="btn-primary" onclick="openRechnungForm()">+ Ausgabe erfassen</button>` : `<button class="btn-primary" onclick="openAbrechnungForm()">+ Neue Abrechnung</button>`}
+    ${tab==='ausgaben'? `
+      <div style="display:flex;gap:8px;">
+        <label class="btn-outline" style="display:inline-flex;align-items:center;cursor:pointer;">
+          📄 Rechnung per KI einlesen
+          <input type="file" accept=".pdf,image/*" style="display:none;" onchange="handleRechnungPdfUpload(event)">
+        </label>
+        <button class="btn-primary" onclick="openRechnungForm()">+ Ausgabe manuell</button>
+      </div>` : `<button class="btn-primary" onclick="openAbrechnungForm()">+ Neue Abrechnung</button>`}
   </div>
+  ${renderNebenkostenSteps()}
   <div class="subnav">
     <button class="${tab==='abrechnungen'?'active':''}" onclick="STATE.nebenkostenTab='abrechnungen'; renderPage();">Abrechnungen</button>
     <button class="${tab==='ausgaben'?'active':''}" onclick="STATE.nebenkostenTab='ausgaben'; renderPage();">Ausgaben</button>
@@ -1422,25 +1532,27 @@ function renderAbrechnungenTab(){
 
 function renderAusgabenTab(){
   const rows = [...STATE.rechnungen].sort((a,b)=>(b.rechnungsdatum||'').localeCompare(a.rechnungsdatum||''));
-  const rechnungOhneBeleg = rows.filter(r=> !STATE.zahlungen.some(z=>z.rechnung_id===r.id));
+  const rechnungOhneBankbeleg = rows.filter(r=> !STATE.zahlungen.some(z=>z.rechnung_id===r.id));
   return `
-  ${rechnungOhneBeleg.length>0? `<div class="config-banner">⚠ ${rechnungOhneBeleg.length} Rechnung(en) haben noch keinen passenden Bankausgang zugeordnet bekommen. Importiere den Kontoauszug (Zahlungsabgleich), um das zu prüfen.</div>`:''}
+  ${rechnungOhneBankbeleg.length>0? `<div class="config-banner">⚠ ${rechnungOhneBankbeleg.length} Rechnung(en) haben noch keinen passenden Bankausgang zugeordnet bekommen. Importiere den Kontoauszug (Zahlungsabgleich), um das zu prüfen.</div>`:''}
   <div class="card">
     <table>
-      <thead><tr><th>Datum</th><th>Objekt</th><th>Kostenart</th><th>Betrag</th><th>Leistungszeitraum</th><th>Umlagefähig</th><th>Beleg</th><th></th></tr></thead>
+      <thead><tr><th>Datum</th><th>Objekt</th><th>Kostenart</th><th>Betrag</th><th>Leistungszeitraum</th><th>Umlagefähig</th><th>Bank</th><th>PDF</th><th></th></tr></thead>
       <tbody>
-      ${rows.length===0? `<tr><td colspan="8" class="empty">Noch keine Ausgaben erfasst</td></tr>` :
+      ${rows.length===0? `<tr><td colspan="9" class="empty">Noch keine Ausgaben erfasst</td></tr>` :
         rows.map(r=>{
           const ka = STATE.kostenarten.find(k=>k.id===r.kostenart_id);
-          const beleg = STATE.zahlungen.find(z=>z.rechnung_id===r.id);
+          const bankbeleg = STATE.zahlungen.find(z=>z.rechnung_id===r.id);
+          const dok = r.dokument_id? STATE.dokumente.find(d=>d.id===r.dokument_id) : null;
           return `<tr class="rowhover">
             <td>${fmtDate(r.rechnungsdatum)}</td>
             <td>${esc(objektName(r.objekt_id))}</td>
-            <td>${ka?esc(ka.name):'–'}</td>
+            <td>${ka?esc(ka.name):'–'}${r.ki_erkannt?' <span class="badge badge-muted" title="Per KI erkannt">KI</span>':''}</td>
             <td>${fmtMoney(r.betrag)}</td>
             <td style="font-size:12px;color:var(--muted);">${r.leistungszeitraum_von?fmtDate(r.leistungszeitraum_von)+' – '+fmtDate(r.leistungszeitraum_bis):'–'}</td>
             <td>${r.umlagefaehig? '<span class="badge badge-ok">ja</span>' : '<span class="badge badge-muted">nein</span>'}</td>
-            <td>${beleg? '<span class="badge badge-ok">✓ Bank</span>' : '<span class="badge badge-warn">fehlt</span>'}</td>
+            <td>${bankbeleg? '<span class="badge badge-ok">✓</span>' : '<span class="badge badge-warn">fehlt</span>'}</td>
+            <td>${dok? `<button class="btn-ghost btn-sm" onclick="downloadDokument('${dok.storage_path}')">📄 öffnen</button>` : '<span class="badge badge-muted">kein PDF</span>'}</td>
             <td style="text-align:right;white-space:nowrap;">
               <button class="btn-ghost btn-sm" onclick="openRechnungForm('${r.id}')">Bearbeiten</button>
               <button class="btn-danger btn-sm" onclick="deleteRechnung('${r.id}')">Löschen</button>
@@ -1452,24 +1564,27 @@ function renderAusgabenTab(){
   </div>`;
 }
 
-function openRechnungForm(id, zahlungId){
-  const r = id? STATE.rechnungen.find(x=>x.id===id) : {};
+function openRechnungForm(id, zahlungId, kiPrefill, dokumentId){
+  const r = id? STATE.rechnungen.find(x=>x.id===id) : (kiPrefill || {});
   const z = zahlungId? STATE.zahlungen.find(x=>x.id===zahlungId) : null;
   const objOpts = STATE.objekte.map(o=>`<option value="${o.id}" ${r.objekt_id===o.id?'selected':''}>${esc(o.name)}</option>`).join('');
   const kaOpts = STATE.kostenarten.map(k=>`<option value="${k.id}" ${r.kostenart_id===k.id?'selected':''}>${esc(k.name)}</option>`).join('');
   const body = `
     ${z? `<div class="helptext" style="margin-bottom:12px;">Aus Bankbuchung übernommen: ${fmtMoney(z.betrag)} am ${fmtDate(z.datum)} · ${esc(z.verwendungszweck||'')}</div>`:''}
+    ${kiPrefill? `<div class="config-banner">🤖 KI-Vorschlag (Sicherheit: ${Math.round((kiPrefill._kiConfidence||0.5)*100)}%) – bitte alle Werte prüfen, bevor du speicherst.
+      ${(kiPrefill._kiWarnungen&&kiPrefill._kiWarnungen.length)? '<br>'+kiPrefill._kiWarnungen.map(w=>esc(w)).join('<br>') : ''}
+    </div>`:''}
     <div class="field-row">
-      <div class="field"><label>Objekt</label><select id="f-r-objekt">${objOpts||'<option>Erst Objekt anlegen</option>'}</select></div>
-      <div class="field"><label>Kostenart</label><select id="f-r-ka">${kaOpts}</select></div>
+      <div class="field req"><label>Objekt</label><select id="f-r-objekt">${objOpts||'<option>Erst Objekt anlegen</option>'}</select></div>
+      <div class="field req"><label>Kostenart</label><select id="f-r-ka">${kaOpts}</select></div>
     </div>
     <div class="field-row">
-      <div class="field"><label>Rechnungsdatum</label><input id="f-r-datum" type="date" value="${r.rechnungsdatum || (z?z.datum:todayStr())}"></div>
-      <div class="field"><label>Betrag (€)</label><input id="f-r-betrag" type="number" step="0.01" value="${r.betrag || (z?Math.abs(z.betrag):'')}"></div>
+      <div class="field req"><label>Rechnungsdatum</label><input id="f-r-datum" type="date" value="${r.rechnungsdatum || (z?z.datum:todayStr())}"></div>
+      <div class="field req"><label>Betrag (€)</label><input id="f-r-betrag" type="number" step="0.01" value="${r.betrag || (z?Math.abs(z.betrag):'')}"></div>
     </div>
     <div class="field-row">
-      <div class="field"><label>Leistungszeitraum von</label><input id="f-r-von" type="date" value="${r.leistungszeitraum_von||''}"></div>
-      <div class="field"><label>Leistungszeitraum bis</label><input id="f-r-bis" type="date" value="${r.leistungszeitraum_bis||''}"></div>
+      <div class="field req"><label>Leistungszeitraum von</label><input id="f-r-von" type="date" value="${r.leistungszeitraum_von||''}"></div>
+      <div class="field req"><label>Leistungszeitraum bis</label><input id="f-r-bis" type="date" value="${r.leistungszeitraum_bis||''}"></div>
     </div>
     <div class="helptext" style="margin-top:-8px;margin-bottom:14px;">Wichtig für die Abrechnung: nicht das Rechnungsdatum, sondern der Zeitraum, für den die Leistung erbracht wurde (z.B. Heizöl-Lieferung für 2025 auch wenn im Januar 2026 bezahlt).</div>
     <div class="field"><label>Aussteller / Lieferant</label><input id="f-r-aussteller" value="${esc(r.aussteller || (z?z.absender:''))}"></div>
@@ -1481,13 +1596,19 @@ function openRechnungForm(id, zahlungId){
       </select>
       <div class="helptext">Nach § 2 BetrKV sind nur laufende Betriebskosten umlagefähig, keine Reparatur- oder Instandhaltungskosten.</div>
     </div>
+    <div class="field-row">
+      <div class="field"><label>CO2-Kosten laut Rechnung (€, optional)</label><input id="f-r-co2kosten" type="number" step="0.01" value="${r.co2_kosten||''}"></div>
+      <div class="field"><label>Davon Vermieteranteil (%, optional)</label><input id="f-r-co2anteil" type="number" step="0.1" min="0" max="100" value="${r.co2_vermieteranteil_prozent||''}"></div>
+    </div>
+    <div class="helptext" style="margin-top:-8px;margin-bottom:14px;">Nur bei Heizöl/Erdgas/Fernwärme relevant (CO2KostAufG, seit 2023). Dein Lieferant muss beide Werte gesetzlich auf der Rechnung ausweisen. Leer lassen, wenn nicht zutreffend – der Vermieteranteil wird dann automatisch vor der Verteilung an die Mieter abgezogen.</div>
     <div class="field"><label>Notizen</label><textarea id="f-r-notiz">${esc(r.notizen||'')}</textarea></div>
+    ${dokumentId? `<div class="helptext">📄 Original-Beleg wird beim Speichern mit dieser Ausgabe verknüpft.</div>`:''}
   `;
-  const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="saveRechnung('${id||''}','${zahlungId||''}')">Speichern</button>`;
-  openModal(id?'Ausgabe bearbeiten':'Ausgabe erfassen', body, foot);
+  const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="saveRechnung('${id||''}','${zahlungId||''}','${dokumentId||''}',${kiPrefill?'true':'false'})">Speichern</button>`;
+  openModal(id?'Ausgabe bearbeiten':(kiPrefill?'KI-Vorschlag prüfen und übernehmen':'Ausgabe erfassen'), body, foot);
 }
 function openRechnungFormAusZahlung(zahlungId){ openRechnungForm(null, zahlungId); }
-async function saveRechnung(id, zahlungId){
+async function saveRechnung(id, zahlungId, dokumentId, kiErkannt){
   const obj = {
     objekt_id: document.getElementById('f-r-objekt').value,
     kostenart_id: document.getElementById('f-r-ka').value,
@@ -1497,8 +1618,12 @@ async function saveRechnung(id, zahlungId){
     leistungszeitraum_bis: document.getElementById('f-r-bis').value || null,
     aussteller: document.getElementById('f-r-aussteller').value.trim(),
     umlagefaehig: document.getElementById('f-r-umlage').value==='ja',
+    co2_kosten: document.getElementById('f-r-co2kosten').value? Number(document.getElementById('f-r-co2kosten').value): null,
+    co2_vermieteranteil_prozent: document.getElementById('f-r-co2anteil').value? Number(document.getElementById('f-r-co2anteil').value): null,
     notizen: document.getElementById('f-r-notiz').value.trim(),
   };
+  if(dokumentId){ obj.dokument_id = dokumentId; }
+  if(kiErkannt==='true' || kiErkannt===true){ obj.ki_erkannt = true; }
   if(!obj.objekt_id || !obj.kostenart_id || !obj.rechnungsdatum){ showToast('Bitte Objekt, Kostenart und Datum angeben', true); return; }
   if(!obj.leistungszeitraum_von || !obj.leistungszeitraum_bis){ showToast('Bitte Leistungszeitraum angeben – sonst kann die Abrechnung diese Ausgabe nicht finden', true); return; }
   let rechnung;
@@ -1522,6 +1647,108 @@ async function deleteRechnung(id){
   await dbDelete('rechnungen', id);
   STATE.rechnungen = STATE.rechnungen.filter(x=>x.id!==id);
   showToast('Ausgabe gelöscht'); renderPage();
+}
+
+/* ============================================================
+   KI-RECHNUNGSIMPORT (PDF/Foto → automatische Erkennung)
+   ============================================================ */
+function fileToBase64(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=> resolve(reader.result.split(',')[1]);
+    reader.onerror = ()=> reject(new Error('Datei konnte nicht gelesen werden'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function findObjektIdByName(name){
+  if(!name) return '';
+  const n = String(name).toLowerCase();
+  const treffer = STATE.objekte.find(o=>n.includes(o.name.toLowerCase()) || o.name.toLowerCase().includes(n));
+  return treffer? treffer.id : '';
+}
+function findKostenartIdByName(name){
+  if(!name) return STATE.kostenarten.find(k=>k.name==='Sonstiges')?.id || '';
+  const n = String(name).toLowerCase();
+  const exakt = STATE.kostenarten.find(k=>k.name.toLowerCase()===n);
+  if(exakt) return exakt.id;
+  const teil = STATE.kostenarten.find(k=>n.includes(k.name.toLowerCase()) || k.name.toLowerCase().includes(n));
+  return teil? teil.id : (STATE.kostenarten.find(k=>k.name==='Sonstiges')?.id || '');
+}
+
+async function analyzeInvoiceFile(file){
+  const base64 = await fileToBase64(file);
+  const isPdf = file.type==='application/pdf';
+  const objektListe = STATE.objekte.map(o=>`${o.name} (${o.strasse||''}, ${o.plz||''} ${o.ort||''})`).join('; ') || 'keine Objekte angelegt';
+  const kostenartListe = STATE.kostenarten.map(k=>k.name).join(', ');
+  const systemPrompt = `Du analysierst eine Betriebskosten-/Nebenkosten-Rechnung (Versorger, Handwerker, Versicherung o.ä.) für eine deutsche Hausverwaltung.
+Bekannte Objekte: ${objektListe}
+Bekannte Kostenarten: ${kostenartListe}
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, ohne Markdown-Codeblock, ohne Erklärtext, exakt in diesem Format:
+{"aussteller":"string","betrag":zahl,"rechnungsdatum":"YYYY-MM-DD","leistungszeitraum_von":"YYYY-MM-DD","leistungszeitraum_bis":"YYYY-MM-DD","kostenart_vorschlag":"eine der bekannten Kostenarten, so genau wie möglich","objekt_vorschlag":"Name des am besten passenden bekannten Objekts, oder leerer String falls nicht erkennbar","co2_kosten":zahl oder null,"co2_vermieteranteil_prozent":zahl oder null,"confidence":zahl zwischen 0 und 1,"warnungen":["kurze Hinweise auf Unsicherheiten, leeres Array falls keine"]}
+Falls der Leistungszeitraum nicht explizit angegeben ist, aber ein Abrechnungsjahr erkennbar ist, nimm das volle Kalenderjahr an und weise in "warnungen" darauf hin.`;
+
+  const contentBlock = isPdf
+    ? {type:"document", source:{type:"base64", media_type:"application/pdf", data: base64}}
+    : {type:"image", source:{type:"base64", media_type: file.type || "image/jpeg", data: base64}};
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      system: systemPrompt,
+      messages: [{role:"user", content:[contentBlock, {type:"text", text:"Extrahiere die Rechnungsdaten als JSON gemäß Vorgabe."}]}]
+    })
+  });
+  if(!response.ok) throw new Error('KI-Anfrage fehlgeschlagen (HTTP '+response.status+')');
+  const data = await response.json();
+  const textBlock = (data.content||[]).find(c=>c.type==='text');
+  if(!textBlock) throw new Error('Keine Antwort von der KI erhalten');
+  const clean = textBlock.text.replace(/```json|```/g,'').trim();
+  return JSON.parse(clean);
+}
+
+async function handleRechnungPdfUpload(evt){
+  const file = evt.target.files[0];
+  if(!file) return;
+  showToast('KI liest Rechnung ein – einen Moment...');
+
+  // Beleg immer speichern, unabhängig davon ob die KI-Erkennung klappt
+  let dokument = null;
+  try{
+    const path = `belege/${Date.now()}_${file.name}`;
+    const {error: upErr} = await sb.storage.from('dokumente').upload(path, file);
+    if(!upErr){
+      dokument = await dbInsert('dokumente', {kategorie:'Rechnung', dateiname:file.name, storage_path:path, notizen:'Per KI-Rechnungsimport hochgeladen'});
+      STATE.dokumente.unshift(dokument);
+    }
+  }catch(e){ /* Upload-Fehler beeinträchtigt die KI-Erkennung nicht */ }
+
+  try{
+    const result = await analyzeInvoiceFile(file);
+    const prefill = {
+      objekt_id: findObjektIdByName(result.objekt_vorschlag),
+      kostenart_id: findKostenartIdByName(result.kostenart_vorschlag),
+      rechnungsdatum: result.rechnungsdatum || todayStr(),
+      betrag: result.betrag || '',
+      leistungszeitraum_von: result.leistungszeitraum_von || '',
+      leistungszeitraum_bis: result.leistungszeitraum_bis || '',
+      aussteller: result.aussteller || '',
+      co2_kosten: result.co2_kosten || '',
+      co2_vermieteranteil_prozent: result.co2_vermieteranteil_prozent || '',
+      umlagefaehig: true,
+      _kiWarnungen: result.warnungen || [],
+      _kiConfidence: result.confidence!=null? result.confidence : 0.5,
+    };
+    if(!prefill.objekt_id) prefill._kiWarnungen.push('Objekt konnte nicht sicher erkannt werden – bitte manuell wählen.');
+    openRechnungForm(null, null, prefill, dokument?.id);
+  }catch(e){
+    showToast('KI-Erkennung fehlgeschlagen (' + e.message + ') – Beleg wurde trotzdem gespeichert, bitte manuell erfassen.', true);
+    if(dokument) openRechnungForm(null, null, null, dokument.id);
+  }
+  evt.target.value = '';
 }
 
 function openAbrechnungForm(){
@@ -1557,9 +1784,10 @@ function renderAbrechnungDetail(id){
   const kostenartenInAbrechnung = [...new Set(details.filter(d=>!d.ist_vorauszahlung).map(d=>d.kostenart_id))];
   const pruefsummen = kostenartenInAbrechnung.map(kaId=>{
     const ka = STATE.kostenarten.find(k=>k.id===kaId);
-    const rechnungssumme = STATE.rechnungen.filter(r=>r.objekt_id===a.objekt_id && r.kostenart_id===kaId && r.umlagefaehig!==false &&
-      r.leistungszeitraum_von && r.leistungszeitraum_bis && r.leistungszeitraum_von<=a.zeitraum_bis && r.leistungszeitraum_bis>=a.zeitraum_von)
-      .reduce((s,r)=>s+Number(r.betrag||0),0);
+    const rechnungenKaPruef = STATE.rechnungen.filter(r=>r.objekt_id===a.objekt_id && r.kostenart_id===kaId && r.umlagefaehig!==false &&
+      r.leistungszeitraum_von && r.leistungszeitraum_bis && r.leistungszeitraum_von<=a.zeitraum_bis && r.leistungszeitraum_bis>=a.zeitraum_von);
+    let rechnungssumme = rechnungenKaPruef.reduce((s,r)=>s+anteiligerRechnungsbetrag(r,a.zeitraum_von,a.zeitraum_bis),0);
+    if(ka?.ist_heizkosten){ rechnungssumme = Math.max(0, rechnungssumme - co2VermieterAbzug(rechnungenKaPruef, a.zeitraum_von, a.zeitraum_bis)); }
     const verteiltsumme = details.filter(d=>d.kostenart_id===kaId && !d.ist_vorauszahlung).reduce((s,d)=>s+Number(d.betrag||0),0);
     return {name: ka?.name||'?', rechnungssumme, verteiltsumme, diff: round2(rechnungssumme-verteiltsumme)};
   });
@@ -1575,6 +1803,7 @@ function renderAbrechnungDetail(id){
         <option value="fertig" ${a.status==='fertig'?'selected':''}>Fertig</option>
         <option value="versendet" ${a.status==='versendet'?'selected':''}>Versendet</option>
       </select>
+      <button class="btn-outline" onclick="exportAlleRechnungenAlsZip('${a.id}')">Alle Rechnungen exportieren</button>
       <button class="btn-outline" onclick="window.print()">Drucken / PDF</button>
     </div>
   </div>
@@ -1609,9 +1838,14 @@ function renderAbrechnungDetail(id){
         ${kostenRows.map(r=>{
           const k = STATE.kostenarten.find(x=>x.id===r.kostenart_id);
           const angepasst = r.berechneter_betrag!=null && Math.abs(Number(r.betrag)-Number(r.berechneter_betrag))>0.005;
+          let tooltip = `Ursprünglich berechnet: ${fmtMoney(r.berechneter_betrag)}`;
+          if(Array.isArray(r.aenderungshistorie) && r.aenderungshistorie.length){
+            const letzte = r.aenderungshistorie[r.aenderungshistorie.length-1];
+            tooltip += ` · Zuletzt: ${fmtMoney(letzte.alt)} → ${fmtMoney(letzte.neu)} (${letzte.grund})`;
+          }
           return `<div class="ab-summary">
             <span>${esc(k?.name||'Kostenart')} <span class="helptext">(${esc(r.anteil_beschreibung||'')})</span>
-              ${angepasst? `<span class="badge badge-warn no-print" title="Ursprünglich berechnet: ${fmtMoney(r.berechneter_betrag)}" style="margin-left:6px;">manuell angepasst</span>`:''}
+              ${angepasst? `<span class="badge badge-warn no-print" title="${esc(tooltip)}" style="margin-left:6px;">manuell angepasst</span>`:''}
             </span>
             <input class="editable-amount mono" type="number" step="0.01" value="${r.betrag}" onchange="updateDetailBetrag('${r.id}', this.value)">
           </div>`;
@@ -1627,15 +1861,76 @@ function renderAbrechnungDetail(id){
   `;
 }
 
-async function updateDetailBetrag(id, value){
+function updateDetailBetrag(id, value){
   const betrag = Number(value)||0;
-  await dbUpdate('abrechnung_details', id, {betrag});
-  STATE.abrechnungDetails.find(d=>d.id===id).betrag = betrag;
+  const detail = STATE.abrechnungDetails.find(d=>d.id===id);
+  if(!detail) return;
+  if(Math.abs(betrag - Number(detail.betrag)) > 0.004){
+    openAenderungsgrundModal(id, betrag);
+  } else {
+    dbUpdate('abrechnung_details', id, {betrag});
+    detail.betrag = betrag;
+  }
+}
+function openAenderungsgrundModal(id, neu){
+  const detail = STATE.abrechnungDetails.find(d=>d.id===id);
+  const body = `
+    <div class="helptext" style="margin-bottom:12px;">Alter Betrag: ${fmtMoney(detail.betrag)} → Neuer Betrag: ${fmtMoney(neu)}</div>
+    <div class="field req"><label>Änderungsgrund</label><textarea id="f-aenderungsgrund" placeholder="z.B. Sonderabsprache Müllgebühr"></textarea></div>
+  `;
+  const foot = `<button class="btn-outline" onclick="closeModal(); renderPage();">Abbrechen</button><button class="btn-primary" onclick="saveAenderung('${id}', ${neu})">Speichern</button>`;
+  openModal('Betrag anpassen', body, foot);
+}
+async function saveAenderung(id, neu){
+  const grund = document.getElementById('f-aenderungsgrund').value.trim();
+  if(!grund){ showToast('Bitte einen Änderungsgrund angeben', true); return; }
+  const detail = STATE.abrechnungDetails.find(d=>d.id===id);
+  const historie = Array.isArray(detail.aenderungshistorie) ? [...detail.aenderungshistorie] : [];
+  historie.push({alt: detail.betrag, neu, grund, zeitpunkt: new Date().toISOString()});
+  await dbUpdate('abrechnung_details', id, {betrag:neu, aenderungshistorie: historie});
+  detail.betrag = neu; detail.aenderungshistorie = historie;
+  closeModal(); showToast('Änderung gespeichert'); renderPage();
 }
 async function setAbrechnungStatus(id, status){
   await dbUpdate('abrechnungen', id, {status});
   STATE.abrechnungen.find(a=>a.id===id).status = status;
   showToast('Status aktualisiert');
+}
+
+async function exportAlleRechnungenAlsZip(abrechnungId){
+  const a = STATE.abrechnungen.find(x=>x.id===abrechnungId);
+  if(!a) return;
+  const relevanteRechnungen = STATE.rechnungen.filter(r=>r.objekt_id===a.objekt_id &&
+    r.leistungszeitraum_von && r.leistungszeitraum_bis &&
+    r.leistungszeitraum_von<=a.zeitraum_bis && r.leistungszeitraum_bis>=a.zeitraum_von);
+  const mitBeleg = relevanteRechnungen.filter(r=>r.dokument_id);
+  if(mitBeleg.length===0){ showToast('Keine gespeicherten PDF-Belege für diese Abrechnung gefunden', true); return; }
+
+  showToast(`Stelle ${mitBeleg.length} Belege zusammen...`);
+  const zip = new JSZip();
+  let ok = 0;
+  for(const r of mitBeleg){
+    const dok = STATE.dokumente.find(d=>d.id===r.dokument_id);
+    if(!dok) continue;
+    try{
+      const {data, error} = await sb.storage.from('dokumente').download(dok.storage_path);
+      if(error || !data) continue;
+      const ka = STATE.kostenarten.find(k=>k.id===r.kostenart_id);
+      const sicherName = `${fmtDate(r.rechnungsdatum).replace(/\./g,'-')}_${(ka?.name||'Sonstiges')}_${dok.dateiname}`.replace(/[\\/:*?"<>|]/g,'_');
+      zip.file(sicherName, data);
+      ok++;
+    }catch(e){ /* einzelnen fehlenden Beleg überspringen, Rest trotzdem exportieren */ }
+  }
+  if(ok===0){ showToast('Belege konnten nicht geladen werden', true); return; }
+  const blob = await zip.generateAsync({type:'blob'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `Belege_${objektName(a.objekt_id).replace(/[^a-zA-Z0-9]/g,'_')}_${a.zeitraum_von}_${a.zeitraum_bis}.zip`;
+  document.body.appendChild(link); link.click(); link.remove();
+  URL.revokeObjectURL(url);
+  const ohneBeleg = relevanteRechnungen.length - mitBeleg.length;
+  showToast(`${ok} Belege exportiert${ohneBeleg>0? ` · ${ohneBeleg} Rechnung(en) ohne gespeichertes PDF`:''}`);
 }
 
 /* ============================================================
@@ -1789,6 +2084,29 @@ function renderZahlungen(){
   </div>`;
 }
 
+// Robuster CSV-Zeilen-Parser: versteht Anführungszeichen und Delimiter innerhalb von Feldern
+// (z.B. Verwendungszweck "Miete, Nebenkosten Januar" bei komma-getrennten Exporten)
+function parseCsvLine(line, delim){
+  const result = [];
+  let cur = '';
+  let inQuotes = false;
+  for(let i=0; i<line.length; i++){
+    const c = line[i];
+    if(inQuotes){
+      if(c==='"'){
+        if(line[i+1]==='"'){ cur+='"'; i++; }
+        else{ inQuotes = false; }
+      } else { cur += c; }
+    } else {
+      if(c==='"'){ inQuotes = true; }
+      else if(c===delim){ result.push(cur.trim()); cur=''; }
+      else { cur += c; }
+    }
+  }
+  result.push(cur.trim());
+  return result;
+}
+
 function handleCsvUpload(evt){
   const file = evt.target.files[0];
   if(!file) return;
@@ -1797,9 +2115,9 @@ function handleCsvUpload(evt){
     const text = e.target.result;
     const delim = text.includes(';') ? ';' : ',';
     const lines = text.split(/\r?\n/).filter(l=>l.trim().length>0);
-    const headers = lines[0].split(delim).map(h=>h.trim().replace(/^"|"$/g,''));
+    const headers = parseCsvLine(lines[0], delim);
     const rows = lines.slice(1).map(l=>{
-      const cells = l.split(delim).map(c=>c.trim().replace(/^"|"$/g,''));
+      const cells = parseCsvLine(l, delim);
       const obj = {};
       headers.forEach((h,i)=> obj[h]=cells[i]);
       return obj;
@@ -2076,7 +2394,42 @@ function renderEinstellungen(){
 /* ============================================================
    START
    ============================================================ */
-loadAll();
+/* ============================================================
+   ANMELDUNG (Supabase Auth statt offenem Zugriff)
+   ============================================================ */
+function showLoginScreen(){
+  document.getElementById('login-screen').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+}
+function showAppScreen(){
+  document.getElementById('login-screen').style.display = 'none';
+  document.getElementById('app').style.display = 'flex';
+}
+async function handleLogin(){
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  errEl.textContent = '';
+  if(!email || !password){ errEl.textContent = 'Bitte E-Mail und Passwort eingeben.'; return; }
+  const {error} = await sb.auth.signInWithPassword({email, password});
+  if(error){ errEl.textContent = 'Anmeldung fehlgeschlagen: '+error.message; return; }
+}
+async function handleLogout(){
+  await sb.auth.signOut();
+}
+
+async function initAuth(){
+  if(!CONFIGURED){ showAppScreen(); renderPage(); return; }
+  const {data:{session}} = await sb.auth.getSession();
+  if(session){ showAppScreen(); await loadAll(); }
+  else{ showLoginScreen(); }
+
+  sb.auth.onAuthStateChange(async (event, session)=>{
+    if(event==='SIGNED_IN'){ showAppScreen(); await loadAll(); }
+    if(event==='SIGNED_OUT'){ showLoginScreen(); }
+  });
+}
+initAuth();
 </script>
 </body>
 </html>
