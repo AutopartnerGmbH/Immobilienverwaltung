@@ -177,6 +177,11 @@
   .ab-summary{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--border-soft);font-size:13.5px;}
   .ab-summary.total{font-weight:600;border-top:2px solid var(--ink);border-bottom:none;padding-top:12px;margin-top:4px;}
   .editable-amount{width:110px;text-align:right;padding:5px 8px;}
+  @media print{
+    .no-print{display:none !important;}
+    #sidebar, .pagehead button, .pagehead select, .breadcrumb{display:none !important;}
+    input.editable-amount{border:none;background:none;padding:0;-webkit-appearance:none;}
+  }
 </style>
 </head>
 <body>
@@ -250,7 +255,7 @@ let STATE = {
   selectedObjektId: null,
   selectedVorgangId: null,
   selectedAbrechnungId: null,
-  vorgaengeFilter: 'offen',
+  nebenkostenTab: 'abrechnungen',
   dokumenteObjektFilter: '',
   csvRows: null,
   csvMapping: {}
@@ -1232,6 +1237,7 @@ async function generateAbrechnung(objektId, von, bis){
   if(!objektId || !von || !bis){ showToast('Bitte Objekt und Zeitraum wählen', true); return; }
   const objekt = STATE.objekte.find(o=>o.id===objektId);
   const einheitenObjekt = STATE.einheiten.filter(e=>e.objekt_id===objektId && e.typ==='Wohnung');
+  const gesamtTageZeitraum = Math.round((new Date(bis)-new Date(von))/86400000)+1;
 
   let anteile = [];
   for(const e of einheitenObjekt){
@@ -1243,8 +1249,19 @@ async function generateAbrechnung(objektId, von, bis){
   }
   if(anteile.length===0){ showToast('Keine Verträge im gewählten Zeitraum für dieses Objekt gefunden', true); return; }
 
-  const gesamtM2Tage = anteile.reduce((s,a)=>s+(Number(a.einheit.wohnflaeche_m2||0)*a.tage),0);
-  const gesamtPersonenTage = anteile.reduce((s,a)=>s+(Number(a.vertrag.personenzahl||1)*a.tage),0);
+  // Wichtig: Nenner läuft über ALLE Wohnungen des Objekts über den vollen Zeitraum – nicht nur über die
+  // vermieteten Tage. So bleibt der Kostenanteil für Leerstand beim Vermieter, statt auf die Mieter verteilt zu werden.
+  const gesamtM2TageGesamt = einheitenObjekt.reduce((s,e)=>s+(Number(e.wohnflaeche_m2||0)*gesamtTageZeitraum),0);
+
+  const personenzahlWerte = anteile.map(a=>Number(a.vertrag.personenzahl||1));
+  const durchschnittPersonen = personenzahlWerte.length? personenzahlWerte.reduce((s,p)=>s+p,0)/personenzahlWerte.length : 1;
+  const gesamtPersonenTageGesamt = einheitenObjekt.reduce((s,e)=>{
+    const occ = anteile.filter(a=>a.einheit.id===e.id);
+    const occTage = occ.reduce((ss,a)=>ss+a.tage,0);
+    const occPersonenTage = occ.reduce((ss,a)=>ss+(Number(a.vertrag.personenzahl||1)*a.tage),0);
+    const gapTage = Math.max(0, gesamtTageZeitraum-occTage);
+    return s + occPersonenTage + gapTage*durchschnittPersonen;
+  },0);
 
   const aktiveKa = STATE.kostenarten.filter(k=>{
     const ok = STATE.objektKostenarten.find(x=>x.objekt_id===objektId && x.kostenart_id===k.id);
@@ -1255,15 +1272,18 @@ async function generateAbrechnung(objektId, von, bis){
   STATE.abrechnungen.unshift(abrechnung);
 
   const neueDetails = [];
-  const m2Anteil = (a)=> gesamtM2Tage>0? (Number(a.einheit.wohnflaeche_m2||0)*a.tage)/gesamtM2Tage : 1/anteile.length;
-  const personenAnteil = (a)=> gesamtPersonenTage>0? (Number(a.vertrag.personenzahl||1)*a.tage)/gesamtPersonenTage : 1/anteile.length;
+  const warnungen = [];
+  const gesamtBetragProKostenart = {};
+  const m2Anteil = (a)=> gesamtM2TageGesamt>0? (Number(a.einheit.wohnflaeche_m2||0)*a.tage)/gesamtM2TageGesamt : 1/anteile.length;
+  const personenAnteil = (a)=> gesamtPersonenTageGesamt>0? (Number(a.vertrag.personenzahl||1)*a.tage)/gesamtPersonenTageGesamt : 1/anteile.length;
 
   for(const k of aktiveKa){
     const ok = STATE.objektKostenarten.find(x=>x.objekt_id===objektId && x.kostenart_id===k.id);
     const schluessel = ok?.verteilerschluessel_override || k.standard_verteilerschluessel;
-    const rechnungenKa = STATE.rechnungen.filter(r=>r.objekt_id===objektId && r.kostenart_id===k.id &&
+    const rechnungenKa = STATE.rechnungen.filter(r=>r.objekt_id===objektId && r.kostenart_id===k.id && r.umlagefaehig!==false &&
       r.leistungszeitraum_von && r.leistungszeitraum_bis && r.leistungszeitraum_von<=bis && r.leistungszeitraum_bis>=von);
     const gesamtBetrag = rechnungenKa.reduce((s,r)=>s+Number(r.betrag||0),0);
+    gesamtBetragProKostenart[k.id] = gesamtBetrag;
     if(gesamtBetrag<=0) continue;
 
     if(k.ist_heizkosten){
@@ -1277,7 +1297,7 @@ async function generateAbrechnung(objektId, von, bis){
       for(const {a,v} of verbraeuche){
         let betrag = 0, beschr;
         if(gesamtVerbrauch>0 && v!=null){ betrag += betragVerbrauch*(v/gesamtVerbrauch); beschr = `${v} Verbrauchseinh.`; }
-        else { betrag += betragVerbrauch*m2Anteil(a); beschr = 'kein Zähler erfasst, nach Fläche'; }
+        else { betrag += betragVerbrauch*m2Anteil(a); beschr = 'kein Zähler erfasst, nach Fläche'; warnungen.push(`${a.einheit.bezeichnung}: keine Zählerablesung für "${k.name}" im Zeitraum gefunden – Kosten wurden ersatzweise nach Fläche verteilt.`); }
         betrag += betragFlaeche*m2Anteil(a);
         neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(betrag),
           anteil_beschreibung:`${beschr} (${objekt.heizkosten_verbrauch_anteil}% Verbr. / ${100-objekt.heizkosten_verbrauch_anteil}% Fläche)`, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
@@ -1294,7 +1314,7 @@ async function generateAbrechnung(objektId, von, bis){
       for(const {a,v} of verbraeuche){
         let betrag, beschr;
         if(gesamtVerbrauch>0 && v!=null){ betrag = gesamtBetrag*(v/gesamtVerbrauch); beschr = `${v} Verbrauchseinh.`; }
-        else { betrag = gesamtBetrag*m2Anteil(a); beschr = 'kein Zähler erfasst, nach Fläche'; }
+        else { betrag = gesamtBetrag*m2Anteil(a); beschr = 'kein Zähler erfasst, nach Fläche'; warnungen.push(`${a.einheit.bezeichnung}: keine Zählerablesung für "${k.name}" im Zeitraum gefunden – Kosten wurden ersatzweise nach Fläche verteilt.`); }
         neueDetails.push({abrechnung_id:abrechnung.id, vertrag_id:a.vertrag.id, kostenart_id:k.id, betrag:round2(betrag),
           anteil_beschreibung:beschr, ist_vorauszahlung:false, ist_ergebnis_zeile:false});
       }
@@ -1315,6 +1335,25 @@ async function generateAbrechnung(objektId, von, bis){
     }
   }
 
+  // Vorjahresvergleich als Plausibilitätscheck (nicht blockierend – nur Hinweis)
+  const vorjahrAbrechnung = STATE.abrechnungen
+    .filter(x=>x.objekt_id===objektId && x.id!==abrechnung.id && x.zeitraum_bis && x.zeitraum_bis<von)
+    .sort((x,y)=>y.zeitraum_bis.localeCompare(x.zeitraum_bis))[0];
+  if(vorjahrAbrechnung){
+    for(const k of aktiveKa){
+      const aktuell = gesamtBetragProKostenart[k.id]||0;
+      const vorjahr = STATE.abrechnungDetails.filter(d=>d.abrechnung_id===vorjahrAbrechnung.id && d.kostenart_id===k.id && !d.ist_vorauszahlung).reduce((s,d)=>s+Number(d.betrag||0),0);
+      if(vorjahr>0){
+        const abweichung = (aktuell-vorjahr)/vorjahr;
+        if(Math.abs(abweichung)>0.3){
+          warnungen.push(`${k.name}: ${fmtMoney(aktuell)} in dieser Abrechnung vs. ${fmtMoney(vorjahr)} im Vorjahreszeitraum (${abweichung>0?'+':''}${Math.round(abweichung*100)}%) – bitte auf Plausibilität prüfen.`);
+        }
+      } else if(aktuell===0 && vorjahr===undefined){
+        // keine Vorjahresdaten für diese Kostenart, kein Hinweis nötig
+      }
+    }
+  }
+
   for(const a of anteile){
     const monate = a.tage/30.44;
     const vz = Number(a.vertrag.nk_vorauszahlung||0)*monate;
@@ -1322,7 +1361,22 @@ async function generateAbrechnung(objektId, von, bis){
       anteil_beschreibung:`${monate.toFixed(1)} Monate NK-Vorauszahlung (Näherung)`, ist_vorauszahlung:true, ist_ergebnis_zeile:false});
   }
 
-  for(const d of neueDetails){ const row = await dbInsert('abrechnung_details', d); STATE.abrechnungDetails.push(row); }
+  for(const d of neueDetails){ d.berechneter_betrag = d.betrag; const row = await dbInsert('abrechnung_details', d); STATE.abrechnungDetails.push(row); }
+
+  if(warnungen.length){
+    await dbUpdate('abrechnungen', abrechnung.id, {warnungen});
+    abrechnung.warnungen = warnungen;
+  }
+
+  // 12-Monats-Frist (§ 556 Abs. 3 BGB): Abrechnung muss dem Mieter fristgerecht zugehen
+  const fristDatum = new Date(bis); fristDatum.setFullYear(fristDatum.getFullYear()+1);
+  const fristVorgang = await dbInsert('vorgaenge', {
+    titel: `Nebenkostenabrechnung ${objekt.name} (${fmtDate(von)}–${fmtDate(bis)}) versenden`,
+    kategorie: 'Nebenkosten', objekt_id: objektId, prioritaet:'hoch', status:'offen',
+    faelligkeit: fristDatum.toISOString().slice(0,10),
+    notizen: 'Gesetzliche Frist: 12 Monate nach Ende des Abrechnungszeitraums (§ 556 Abs. 3 BGB). Danach sind Nachforderungen ausgeschlossen.'
+  });
+  STATE.vorgaenge.unshift(fristVorgang);
 
   closeModal();
   showToast('Abrechnung erstellt – bitte prüfen');
@@ -1332,26 +1386,142 @@ async function generateAbrechnung(objektId, von, bis){
 
 function renderNebenkosten(){
   if(STATE.selectedAbrechnungId){ return renderAbrechnungDetail(STATE.selectedAbrechnungId); }
+  const tab = STATE.nebenkostenTab || 'abrechnungen';
   return `
   <div class="pagehead">
-    <div><h1>Nebenkosten</h1><div class="desc">Nebenkostenabrechnungen je Objekt und Zeitraum erstellen</div></div>
-    <button class="btn-primary" onclick="openAbrechnungForm()">+ Neue Abrechnung</button>
+    <div><h1>Nebenkosten</h1><div class="desc">Ausgaben erfassen und Nebenkostenabrechnungen erstellen</div></div>
+    ${tab==='ausgaben'? `<button class="btn-primary" onclick="openRechnungForm()">+ Ausgabe erfassen</button>` : `<button class="btn-primary" onclick="openAbrechnungForm()">+ Neue Abrechnung</button>`}
   </div>
+  <div class="subnav">
+    <button class="${tab==='abrechnungen'?'active':''}" onclick="STATE.nebenkostenTab='abrechnungen'; renderPage();">Abrechnungen</button>
+    <button class="${tab==='ausgaben'?'active':''}" onclick="STATE.nebenkostenTab='ausgaben'; renderPage();">Ausgaben</button>
+  </div>
+  ${tab==='ausgaben'? renderAusgabenTab() : renderAbrechnungenTab()}
+  `;
+}
+
+function renderAbrechnungenTab(){
+  return `
   <div class="card">
     <table>
-      <thead><tr><th>Objekt</th><th>Zeitraum</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th>Objekt</th><th>Zeitraum</th><th>Status</th><th>Prüfhinweise</th><th></th></tr></thead>
       <tbody>
-      ${STATE.abrechnungen.length===0? `<tr><td colspan="4" class="empty">Noch keine Abrechnung erstellt</td></tr>` :
+      ${STATE.abrechnungen.length===0? `<tr><td colspan="5" class="empty">Noch keine Abrechnung erstellt</td></tr>` :
         STATE.abrechnungen.map(a=>`
         <tr class="rowhover" style="cursor:pointer;" onclick="STATE.selectedAbrechnungId='${a.id}'; renderPage();">
           <td><b>${esc(objektName(a.objekt_id))}</b></td>
           <td>${fmtDate(a.zeitraum_von)} – ${fmtDate(a.zeitraum_bis)}</td>
           <td><span class="badge ${a.status==='versendet'?'badge-ok':a.status==='fertig'?'badge-warn':'badge-muted'}">${a.status}</span></td>
+          <td>${(a.warnungen&&a.warnungen.length)? `<span class="badge badge-warn">${a.warnungen.length}</span>` : '<span class="badge badge-ok">keine</span>'}</td>
           <td style="text-align:right;"><button class="btn-danger btn-sm" onclick="event.stopPropagation(); deleteAbrechnung('${a.id}')">Löschen</button></td>
         </tr>`).join('')}
       </tbody>
     </table>
   </div>`;
+}
+
+function renderAusgabenTab(){
+  const rows = [...STATE.rechnungen].sort((a,b)=>(b.rechnungsdatum||'').localeCompare(a.rechnungsdatum||''));
+  const rechnungOhneBeleg = rows.filter(r=> !STATE.zahlungen.some(z=>z.rechnung_id===r.id));
+  return `
+  ${rechnungOhneBeleg.length>0? `<div class="config-banner">⚠ ${rechnungOhneBeleg.length} Rechnung(en) haben noch keinen passenden Bankausgang zugeordnet bekommen. Importiere den Kontoauszug (Zahlungsabgleich), um das zu prüfen.</div>`:''}
+  <div class="card">
+    <table>
+      <thead><tr><th>Datum</th><th>Objekt</th><th>Kostenart</th><th>Betrag</th><th>Leistungszeitraum</th><th>Umlagefähig</th><th>Beleg</th><th></th></tr></thead>
+      <tbody>
+      ${rows.length===0? `<tr><td colspan="8" class="empty">Noch keine Ausgaben erfasst</td></tr>` :
+        rows.map(r=>{
+          const ka = STATE.kostenarten.find(k=>k.id===r.kostenart_id);
+          const beleg = STATE.zahlungen.find(z=>z.rechnung_id===r.id);
+          return `<tr class="rowhover">
+            <td>${fmtDate(r.rechnungsdatum)}</td>
+            <td>${esc(objektName(r.objekt_id))}</td>
+            <td>${ka?esc(ka.name):'–'}</td>
+            <td>${fmtMoney(r.betrag)}</td>
+            <td style="font-size:12px;color:var(--muted);">${r.leistungszeitraum_von?fmtDate(r.leistungszeitraum_von)+' – '+fmtDate(r.leistungszeitraum_bis):'–'}</td>
+            <td>${r.umlagefaehig? '<span class="badge badge-ok">ja</span>' : '<span class="badge badge-muted">nein</span>'}</td>
+            <td>${beleg? '<span class="badge badge-ok">✓ Bank</span>' : '<span class="badge badge-warn">fehlt</span>'}</td>
+            <td style="text-align:right;white-space:nowrap;">
+              <button class="btn-ghost btn-sm" onclick="openRechnungForm('${r.id}')">Bearbeiten</button>
+              <button class="btn-danger btn-sm" onclick="deleteRechnung('${r.id}')">Löschen</button>
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function openRechnungForm(id, zahlungId){
+  const r = id? STATE.rechnungen.find(x=>x.id===id) : {};
+  const z = zahlungId? STATE.zahlungen.find(x=>x.id===zahlungId) : null;
+  const objOpts = STATE.objekte.map(o=>`<option value="${o.id}" ${r.objekt_id===o.id?'selected':''}>${esc(o.name)}</option>`).join('');
+  const kaOpts = STATE.kostenarten.map(k=>`<option value="${k.id}" ${r.kostenart_id===k.id?'selected':''}>${esc(k.name)}</option>`).join('');
+  const body = `
+    ${z? `<div class="helptext" style="margin-bottom:12px;">Aus Bankbuchung übernommen: ${fmtMoney(z.betrag)} am ${fmtDate(z.datum)} · ${esc(z.verwendungszweck||'')}</div>`:''}
+    <div class="field-row">
+      <div class="field"><label>Objekt</label><select id="f-r-objekt">${objOpts||'<option>Erst Objekt anlegen</option>'}</select></div>
+      <div class="field"><label>Kostenart</label><select id="f-r-ka">${kaOpts}</select></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Rechnungsdatum</label><input id="f-r-datum" type="date" value="${r.rechnungsdatum || (z?z.datum:todayStr())}"></div>
+      <div class="field"><label>Betrag (€)</label><input id="f-r-betrag" type="number" step="0.01" value="${r.betrag || (z?Math.abs(z.betrag):'')}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Leistungszeitraum von</label><input id="f-r-von" type="date" value="${r.leistungszeitraum_von||''}"></div>
+      <div class="field"><label>Leistungszeitraum bis</label><input id="f-r-bis" type="date" value="${r.leistungszeitraum_bis||''}"></div>
+    </div>
+    <div class="helptext" style="margin-top:-8px;margin-bottom:14px;">Wichtig für die Abrechnung: nicht das Rechnungsdatum, sondern der Zeitraum, für den die Leistung erbracht wurde (z.B. Heizöl-Lieferung für 2025 auch wenn im Januar 2026 bezahlt).</div>
+    <div class="field"><label>Aussteller / Lieferant</label><input id="f-r-aussteller" value="${esc(r.aussteller || (z?z.absender:''))}"></div>
+    <div class="field">
+      <label>Umlagefähig auf Mieter?</label>
+      <select id="f-r-umlage">
+        <option value="ja" ${r.umlagefaehig!==false?'selected':''}>Ja – gehört in die Nebenkostenabrechnung</option>
+        <option value="nein" ${r.umlagefaehig===false?'selected':''}>Nein – trage ich als Vermieter selbst (z.B. Reparatur, Modernisierung)</option>
+      </select>
+      <div class="helptext">Nach § 2 BetrKV sind nur laufende Betriebskosten umlagefähig, keine Reparatur- oder Instandhaltungskosten.</div>
+    </div>
+    <div class="field"><label>Notizen</label><textarea id="f-r-notiz">${esc(r.notizen||'')}</textarea></div>
+  `;
+  const foot = `<button class="btn-outline" onclick="closeModal()">Abbrechen</button><button class="btn-primary" onclick="saveRechnung('${id||''}','${zahlungId||''}')">Speichern</button>`;
+  openModal(id?'Ausgabe bearbeiten':'Ausgabe erfassen', body, foot);
+}
+function openRechnungFormAusZahlung(zahlungId){ openRechnungForm(null, zahlungId); }
+async function saveRechnung(id, zahlungId){
+  const obj = {
+    objekt_id: document.getElementById('f-r-objekt').value,
+    kostenart_id: document.getElementById('f-r-ka').value,
+    rechnungsdatum: document.getElementById('f-r-datum').value,
+    betrag: Number(document.getElementById('f-r-betrag').value)||0,
+    leistungszeitraum_von: document.getElementById('f-r-von').value || null,
+    leistungszeitraum_bis: document.getElementById('f-r-bis').value || null,
+    aussteller: document.getElementById('f-r-aussteller').value.trim(),
+    umlagefaehig: document.getElementById('f-r-umlage').value==='ja',
+    notizen: document.getElementById('f-r-notiz').value.trim(),
+  };
+  if(!obj.objekt_id || !obj.kostenart_id || !obj.rechnungsdatum){ showToast('Bitte Objekt, Kostenart und Datum angeben', true); return; }
+  if(!obj.leistungszeitraum_von || !obj.leistungszeitraum_bis){ showToast('Bitte Leistungszeitraum angeben – sonst kann die Abrechnung diese Ausgabe nicht finden', true); return; }
+  let rechnung;
+  if(id){ await dbUpdate('rechnungen', id, obj); rechnung = STATE.rechnungen.find(x=>x.id===id); Object.assign(rechnung, obj); }
+  else{ rechnung = await dbInsert('rechnungen', obj); STATE.rechnungen.push(rechnung); }
+  if(zahlungId){
+    await dbUpdate('zahlungen', zahlungId, {rechnung_id:rechnung.id, status:'zugeordnet'});
+    const z = STATE.zahlungen.find(x=>x.id===zahlungId);
+    if(z){ z.rechnung_id = rechnung.id; z.status='zugeordnet'; }
+  }
+  closeModal(); showToast('Ausgabe gespeichert'); renderPage();
+}
+async function unassignAusgabe(id){
+  await dbUpdate('zahlungen', id, {rechnung_id:null, status:'offen'});
+  const z = STATE.zahlungen.find(x=>x.id===id);
+  z.rechnung_id = null; z.status='offen';
+  showToast('Zuordnung gelöst'); renderPage();
+}
+async function deleteRechnung(id){
+  if(!confirm('Ausgabe wirklich löschen?')) return;
+  await dbDelete('rechnungen', id);
+  STATE.rechnungen = STATE.rechnungen.filter(x=>x.id!==id);
+  showToast('Ausgabe gelöscht'); renderPage();
 }
 
 function openAbrechnungForm(){
@@ -1382,6 +1552,19 @@ function renderAbrechnungDetail(id){
   if(!a){ STATE.selectedAbrechnungId=null; return renderNebenkosten(); }
   const details = STATE.abrechnungDetails.filter(d=>d.abrechnung_id===id);
   const vertragIds = [...new Set(details.map(d=>d.vertrag_id))];
+
+  // Prüfsumme je Kostenart: Summe der Rechnungen muss der Summe der verteilten Beträge entsprechen
+  const kostenartenInAbrechnung = [...new Set(details.filter(d=>!d.ist_vorauszahlung).map(d=>d.kostenart_id))];
+  const pruefsummen = kostenartenInAbrechnung.map(kaId=>{
+    const ka = STATE.kostenarten.find(k=>k.id===kaId);
+    const rechnungssumme = STATE.rechnungen.filter(r=>r.objekt_id===a.objekt_id && r.kostenart_id===kaId && r.umlagefaehig!==false &&
+      r.leistungszeitraum_von && r.leistungszeitraum_bis && r.leistungszeitraum_von<=a.zeitraum_bis && r.leistungszeitraum_bis>=a.zeitraum_von)
+      .reduce((s,r)=>s+Number(r.betrag||0),0);
+    const verteiltsumme = details.filter(d=>d.kostenart_id===kaId && !d.ist_vorauszahlung).reduce((s,d)=>s+Number(d.betrag||0),0);
+    return {name: ka?.name||'?', rechnungssumme, verteiltsumme, diff: round2(rechnungssumme-verteiltsumme)};
+  });
+  const hatAbweichung = pruefsummen.some(p=>Math.abs(p.diff)>0.05);
+
   return `
   <div class="breadcrumb"><span onclick="STATE.selectedAbrechnungId=null; renderPage();">← Alle Abrechnungen</span></div>
   <div class="pagehead">
@@ -1395,6 +1578,20 @@ function renderAbrechnungDetail(id){
       <button class="btn-outline" onclick="window.print()">Drucken / PDF</button>
     </div>
   </div>
+  <div class="card card-pad" style="margin-bottom:20px;${hatAbweichung?'background:var(--danger-dim);':'background:var(--success-dim);'}">
+    <b>Prüfsumme: ${hatAbweichung? '⚠ Abweichung gefunden' : '✓ Stimmt überein'}</b>
+    <table style="margin-top:10px;"><thead><tr><th>Kostenart</th><th>Summe Rechnungen</th><th>Summe an Mieter verteilt</th><th>Differenz</th></tr></thead>
+    <tbody>
+    ${pruefsummen.map(p=>`<tr><td>${esc(p.name)}</td><td>${fmtMoney(p.rechnungssumme)}</td><td>${fmtMoney(p.verteiltsumme)}</td><td style="${Math.abs(p.diff)>0.05?'color:var(--danger);font-weight:600;':''}">${fmtMoney(p.diff)}</td></tr>`).join('')}
+    </tbody></table>
+    ${hatAbweichung? `<div class="helptext" style="margin-top:8px;">Eine Abweichung kann bedeuten: nach der Berechnung wurde ein Betrag manuell verändert, oder eine Rechnung wurde nachträglich hinzugefügt/gelöscht. Prüfe die betroffene Kostenart.</div>`:''}
+  </div>
+  ${(a.warnungen && a.warnungen.length)? `
+  <div class="card card-pad" style="margin-bottom:20px;background:var(--warn-dim);">
+    <b>⚠ Prüfhinweise (${a.warnungen.length})</b>
+    <div class="helptext" style="margin-bottom:8px;">Diese Abrechnung wurde trotzdem erstellt – prüfe die folgenden Punkte, bevor du sie versendest:</div>
+    ${a.warnungen.map(w=>`<div style="padding:6px 0;border-top:1px solid rgba(0,0,0,0.06);font-size:13px;">${esc(w)}</div>`).join('')}
+  </div>`:''}
   ${vertragIds.map(vid=>{
     const v = STATE.vertraege.find(x=>x.id===vid);
     const rows = details.filter(d=>d.vertrag_id===vid);
@@ -1411,8 +1608,11 @@ function renderAbrechnungDetail(id){
       <div class="card-pad">
         ${kostenRows.map(r=>{
           const k = STATE.kostenarten.find(x=>x.id===r.kostenart_id);
+          const angepasst = r.berechneter_betrag!=null && Math.abs(Number(r.betrag)-Number(r.berechneter_betrag))>0.005;
           return `<div class="ab-summary">
-            <span>${esc(k?.name||'Kostenart')} <span class="helptext">(${esc(r.anteil_beschreibung||'')})</span></span>
+            <span>${esc(k?.name||'Kostenart')} <span class="helptext">(${esc(r.anteil_beschreibung||'')})</span>
+              ${angepasst? `<span class="badge badge-warn no-print" title="Ursprünglich berechnet: ${fmtMoney(r.berechneter_betrag)}" style="margin-left:6px;">manuell angepasst</span>`:''}
+            </span>
             <input class="editable-amount mono" type="number" step="0.01" value="${r.betrag}" onchange="updateDetailBetrag('${r.id}', this.value)">
           </div>`;
         }).join('')}
@@ -1442,25 +1642,31 @@ async function setAbrechnungStatus(id, status){
    ZAHLUNGSABGLEICH
    ============================================================ */
 function renderZahlungen(){
-  const offen = STATE.zahlungen.filter(z=>z.status==='offen');
-  const zugeordnet = STATE.zahlungen.filter(z=>z.status==='zugeordnet');
+  const offenEin = STATE.zahlungen.filter(z=>z.status==='offen' && Number(z.betrag)>0);
+  const offenAus = STATE.zahlungen.filter(z=>z.status==='offen' && Number(z.betrag)<0);
+  const zugeordnet = STATE.zahlungen.filter(z=>z.status==='zugeordnet' && z.vertrag_id);
+  const ausgabenZugeordnet = STATE.zahlungen.filter(z=>z.status==='zugeordnet' && z.rechnung_id);
   const ignoriert = STATE.zahlungen.filter(z=>z.status==='ignoriert');
+  const rechnungOhneBeleg = STATE.rechnungen.filter(r=> !STATE.zahlungen.some(z=>z.rechnung_id===r.id));
 
   return `
   <div class="pagehead">
-    <div><h1>Zahlungsabgleich</h1><div class="desc">Kontoauszug als CSV importieren und mit den Soll-Mieten abgleichen</div></div>
+    <div><h1>Zahlungsabgleich</h1><div class="desc">Kompletten Kontoauszug importieren – Mieteinnahmen und Ausgaben werden automatisch geprüft</div></div>
     <label class="btn-primary" style="display:inline-flex;align-items:center;">
       CSV importieren <input type="file" accept=".csv" style="display:none;" onchange="handleCsvUpload(event)">
     </label>
   </div>
 
-  <div class="section-title">Offene Zahlungen (${offen.length})</div>
+  ${offenAus.length>0? `<div class="config-banner">⚠ ${offenAus.length} Ausgabe(n) im Kontoauszug ohne passende hinterlegte Rechnung gefunden. Ohne Erfassung fließen diese Kosten NICHT in die Nebenkostenabrechnung ein.</div>`:''}
+  ${rechnungOhneBeleg.length>0? `<div class="config-banner">⚠ ${rechnungOhneBeleg.length} erfasste Rechnung(en) ohne passenden Bankabgang – prüfe auf Dopplung oder falschen Betrag. Siehe Nebenkosten → Ausgaben.</div>`:''}
+
+  <div class="section-title">Offene Mieteinnahmen (${offenEin.length})</div>
   <div class="card" style="margin-bottom:24px;">
     <table>
       <thead><tr><th>Datum</th><th>Betrag</th><th>Verwendungszweck</th><th>Absender</th><th>Zuordnen</th><th></th></tr></thead>
       <tbody>
-      ${offen.length===0? `<tr><td colspan="6" class="empty">Keine offenen Zahlungen – alles zugeordnet oder noch nichts importiert</td></tr>` :
-        offen.map(z=>`
+      ${offenEin.length===0? `<tr><td colspan="6" class="empty">Keine offenen Zahlungen – alles zugeordnet oder noch nichts importiert</td></tr>` :
+        offenEin.map(z=>`
         <tr class="rowhover">
           <td>${fmtDate(z.datum)}</td>
           <td><b>${fmtMoney(z.betrag)}</b></td>
@@ -1505,6 +1711,27 @@ function renderZahlungen(){
     </table>
   </div>
 
+  <div class="section-title">Offene Ausgaben ohne hinterlegte Rechnung (${offenAus.length})</div>
+  <div class="card" style="margin-bottom:24px;">
+    <table>
+      <thead><tr><th>Datum</th><th>Betrag</th><th>Verwendungszweck</th><th>Absender</th><th></th></tr></thead>
+      <tbody>
+      ${offenAus.length===0? `<tr><td colspan="5" class="empty">Keine offenen Ausgaben – alles erfasst oder noch nichts importiert</td></tr>` :
+        offenAus.map(z=>`
+        <tr class="rowhover">
+          <td>${fmtDate(z.datum)}</td>
+          <td><b>${fmtMoney(z.betrag)}</b></td>
+          <td style="max-width:280px;">${esc(z.verwendungszweck||'')}</td>
+          <td>${esc(z.absender||'')}</td>
+          <td style="text-align:right;white-space:nowrap;">
+            <button class="btn-outline btn-sm" onclick="openRechnungFormAusZahlung('${z.id}')">Als Rechnung erfassen</button>
+            <button class="btn-ghost btn-sm" onclick="ignoreZahlung('${z.id}')">Ignorieren</button>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+
   <div class="section-title">Zugeordnete Zahlungen (${zugeordnet.length})</div>
   <div class="card">
     <table>
@@ -1518,6 +1745,26 @@ function renderZahlungen(){
             <td>${fmtMoney(z.betrag)}</td>
             <td>${v? esc(mieterName(v.mieter_id))+' · '+esc(einheitLabel(v.einheit_id)) : '–'}</td>
             <td style="text-align:right;"><button class="btn-ghost btn-sm" onclick="unassignZahlung('${z.id}')">Zuordnung lösen</button></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section-title">Ausgaben zu Rechnungen zugeordnet (${ausgabenZugeordnet.length})</div>
+  <div class="card" style="margin-bottom:24px;">
+    <table>
+      <thead><tr><th>Datum</th><th>Betrag</th><th>Zugeordnete Rechnung</th><th></th></tr></thead>
+      <tbody>
+      ${ausgabenZugeordnet.length===0? `<tr><td colspan="4" class="empty">Noch keine Ausgaben automatisch zugeordnet</td></tr>` :
+        ausgabenZugeordnet.slice(0,50).map(z=>{
+          const r = STATE.rechnungen.find(x=>x.id===z.rechnung_id);
+          const ka = r? STATE.kostenarten.find(k=>k.id===r.kostenart_id) : null;
+          return `<tr class="rowhover">
+            <td>${fmtDate(z.datum)}</td>
+            <td>${fmtMoney(z.betrag)}</td>
+            <td>${r? esc(objektName(r.objekt_id))+' · '+esc(ka?.name||'') : '–'}</td>
+            <td style="text-align:right;"><button class="btn-ghost btn-sm" onclick="unassignAusgabe('${z.id}')">Zuordnung lösen</button></td>
           </tr>`;
         }).join('')}
       </tbody>
@@ -1583,39 +1830,55 @@ async function importCsv(){
   const zCol = document.getElementById('map-zweck').value;
   const aCol = document.getElementById('map-absender').value;
 
-  let imported = 0, autoMatched = 0;
+  let importedEin = 0, matchedEin = 0, importedAus = 0, matchedAus = 0;
   for(const row of STATE.csvRows){
     let datum = parseGermanDate(row[dCol]);
     let betrag = parseGermanNumber(row[bCol]);
-    if(!datum || isNaN(betrag) || betrag<=0) continue; // nur Eingänge importieren
+    if(!datum || isNaN(betrag) || betrag===0) continue;
     const zweck = row[zCol]||'';
     const absender = aCol? (row[aCol]||'') : '';
 
-    // Auto-Matching: Nachname im Verwendungszweck/Absender suchen + Betrag grob passend
-    let matchVertrag = null;
-    for(const v of aktiveVertraege()){
-      const m = STATE.mieter.find(x=>x.id===v.mieter_id);
-      const nn = (m?.nachname||'').toLowerCase();
-      const firma = (m?.firma||'').toLowerCase();
+    if(betrag>0){
+      // Eingang: gegen aktive Mietverträge abgleichen
+      let matchVertrag = null;
+      for(const v of aktiveVertraege()){
+        const m = STATE.mieter.find(x=>x.id===v.mieter_id);
+        const nn = (m?.nachname||'').toLowerCase();
+        const firma = (m?.firma||'').toLowerCase();
+        const haystack = (zweck+' '+absender).toLowerCase();
+        const soll = Number(v.kaltmiete||0)+Number(v.nk_vorauszahlung||0);
+        const nameMatch = (nn && nn.length>2 && haystack.includes(nn)) || (firma && firma.length>2 && haystack.includes(firma));
+        const betragMatch = Math.abs(betrag - soll) < 0.01;
+        if(nameMatch && betragMatch){ matchVertrag = v; break; }
+      }
+      const saved = await dbInsert('zahlungen', {datum, betrag, verwendungszweck:zweck, absender,
+        vertrag_id: matchVertrag? matchVertrag.id : null, rechnung_id:null,
+        status: matchVertrag? 'zugeordnet' : 'offen'});
+      STATE.zahlungen.unshift(saved);
+      importedEin++;
+      if(matchVertrag) matchedEin++;
+    } else {
+      // Ausgabe: gegen erfasste Rechnungen abgleichen (Betrag + Aussteller/Verwendungszweck + Datumsnähe)
+      const betragAbs = Math.abs(betrag);
       const haystack = (zweck+' '+absender).toLowerCase();
-      const soll = Number(v.kaltmiete||0)+Number(v.nk_vorauszahlung||0);
-      const nameMatch = (nn && nn.length>2 && haystack.includes(nn)) || (firma && firma.length>2 && haystack.includes(firma));
-      const betragMatch = Math.abs(betrag - soll) < 0.01;
-      if(nameMatch && betragMatch){ matchVertrag = v; break; }
+      let matchRechnung = null;
+      for(const r of STATE.rechnungen){
+        if(Math.abs(Number(r.betrag||0) - betragAbs) > 0.01) continue;
+        const ausstellerName = (r.aussteller||'').toLowerCase();
+        const nameMatch = ausstellerName && ausstellerName.length>2 && haystack.includes(ausstellerName);
+        const tageDiff = r.rechnungsdatum? Math.abs((new Date(datum)-new Date(r.rechnungsdatum))/86400000) : 999;
+        if(nameMatch || tageDiff<=14){ matchRechnung = r; break; }
+      }
+      const saved = await dbInsert('zahlungen', {datum, betrag, verwendungszweck:zweck, absender,
+        vertrag_id:null, rechnung_id: matchRechnung? matchRechnung.id : null,
+        status: matchRechnung? 'zugeordnet' : 'offen'});
+      STATE.zahlungen.unshift(saved);
+      importedAus++;
+      if(matchRechnung) matchedAus++;
     }
-
-    const row_ = {
-      datum, betrag, verwendungszweck: zweck, absender,
-      vertrag_id: matchVertrag? matchVertrag.id : null,
-      status: matchVertrag? 'zugeordnet' : 'offen'
-    };
-    const saved = await dbInsert('zahlungen', row_);
-    STATE.zahlungen.unshift(saved);
-    imported++;
-    if(matchVertrag) autoMatched++;
   }
   closeModal();
-  showToast(`${imported} Zahlungen importiert, ${autoMatched} automatisch zugeordnet`);
+  showToast(`${importedEin} Einnahmen (${matchedEin} zugeordnet), ${importedAus} Ausgaben (${matchedAus} zu Rechnungen zugeordnet)`);
   renderPage();
 }
 
