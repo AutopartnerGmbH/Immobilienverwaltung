@@ -277,9 +277,8 @@
     <div class="navitem" data-page="zahlungen"><span class="n">07</span> Zahlungsabgleich</div>
     <div class="navitem" data-page="dokumente"><span class="n">08</span> Dokumente</div>
     <div class="navitem" data-page="formulare"><span class="n">09</span> Formular-Center</div>
-    <div class="navitem" data-page="berichte"><span class="n">10</span> Berichte</div>
-    <div class="navitem" data-page="import"><span class="n">11</span> Datenimport / -export</div>
-    <div class="navitem" data-page="einstellungen"><span class="n">12</span> Einstellungen</div>
+    <div class="navitem" data-page="import"><span class="n">10</span> Datenimport / -export</div>
+    <div class="navitem" data-page="einstellungen"><span class="n">11</span> Einstellungen</div>
     <div class="navitem" onclick="handleLogout()" style="margin-top:auto;border-top:1px solid rgba(255,255,255,0.12);padding-top:14px;"><span class="n">⏻</span> Abmelden</div>
   </nav>
   <main id="main"></main>
@@ -523,7 +522,6 @@ function renderPage(){
     case 'zahlungen': main.innerHTML = renderZahlungen(); break;
     case 'dokumente': main.innerHTML = renderDokumente(); break;
     case 'formulare': main.innerHTML = renderFormulare(); break;
-    case 'berichte': main.innerHTML = renderBerichte(); break;
     case 'import': main.innerHTML = renderImport(); break;
     case 'einstellungen': main.innerHTML = renderEinstellungen(); break;
   }
@@ -936,7 +934,6 @@ function renderVertraegeTab(){
           <td style="max-width:200px;color:var(--ink-soft);font-size:12.5px;">${esc(v.sondervereinbarungen||'–')}</td>
           <td style="text-align:right;white-space:nowrap;">
             <button class="btn-ghost btn-sm" onclick="openVertragForm('${v.id}')">Bearbeiten</button>
-            <button class="btn-ghost btn-sm" onclick="openVertragsAbschlussModal('${v.id}')">📝 Digital abschließen</button>
             ${v.status==='beendet'? (v.ausgeblendet?
               `<button class="btn-ghost btn-sm" onclick="setVertragAusgeblendet('${v.id}', false)">Einblenden</button>` :
               `<button class="btn-ghost btn-sm" onclick="setVertragAusgeblendet('${v.id}', true)">Ausblenden</button>`) : ''}
@@ -1182,9 +1179,22 @@ async function saveVertrag(id){
     sondervereinbarungen: document.getElementById('f-sonder').value.trim(),
   };
   if(!obj.einheit_id || !obj.mieter_id){ showToast('Bitte Einheit und Mieter wählen', true); return; }
-  if(id){ await dbUpdate('vertraege', id, obj); Object.assign(STATE.vertraege.find(x=>x.id===id), obj); }
-  else{ const row = await dbInsert('vertraege', obj); STATE.vertraege.push(row); }
-  closeModal(); showToast('Vertrag gespeichert'); renderPage();
+  const istNeu = !id;
+  let neuerVertrag;
+  if(id){ await dbUpdate('vertraege', id, obj); neuerVertrag = STATE.vertraege.find(x=>x.id===id); Object.assign(neuerVertrag, obj); }
+  else{ neuerVertrag = await dbInsert('vertraege', obj); STATE.vertraege.push(neuerVertrag); }
+  closeModal(); showToast('Vertrag gespeichert');
+  if(istNeu){
+    frageDigitalenAbschluss(neuerVertrag.id);
+  } else {
+    renderPage();
+  }
+}
+function frageDigitalenAbschluss(vertragId){
+  const v = STATE.vertraege.find(x=>x.id===vertragId);
+  const body = `<p>Möchtest du den Vertrag mit <b>${esc(mieterName(v.mieter_id))}</b> jetzt direkt digital abschließen (Unterlagen hochladen, Vertrag erzeugen und unterschreiben)?</p>`;
+  const foot = `<button class="btn-outline" onclick="closeModal(); renderPage();">Später</button><button class="btn-primary" onclick="openVertragsAbschlussModal('${vertragId}')">Ja, jetzt digital abschließen</button>`;
+  openModal('Neuer Vertrag angelegt', body, foot);
 }
 async function deleteVertrag(id){
   if(!confirm('Vertrag wirklich löschen?')) return;
@@ -3168,55 +3178,6 @@ async function deleteDokument(id, path){
 }
 
 /* ============================================================
-   BERICHTE
-   ============================================================ */
-function renderBerichte(){
-  const jahr = new Date().getFullYear();
-  const rows = STATE.objekte.map(o=>{
-    const eh = STATE.einheiten.filter(e=>e.objekt_id===o.id);
-    const aktive = eh.map(e=>vertragFuerEinheit(e.id)).filter(Boolean);
-    const sollJahr = aktive.reduce((s,v)=>s+Number(v.kaltmiete||0)*12,0);
-    return {o, anzahlEinheiten:eh.length, vermietet:aktive.length, leer:eh.length-aktive.length, sollJahr};
-  });
-  const gesamtSoll = rows.reduce((s,r)=>s+r.sollJahr,0);
-  const in12 = new Date(); in12.setFullYear(in12.getFullYear()+1);
-  const auslaufend = STATE.vertraege.filter(v=>v.status==='aktiv' && v.ende_datum && new Date(v.ende_datum)<=in12)
-    .sort((a,b)=>a.ende_datum.localeCompare(b.ende_datum));
-
-  return `
-  <div class="pagehead"><div><h1>Berichte</h1><div class="desc">Kennzahlen und Übersichten, Stand ${jahr}</div></div></div>
-
-  <div class="section-title">Jahres-Soll-Mieteinnahmen je Objekt</div>
-  <div class="card" style="margin-bottom:24px;">
-    <table>
-      <thead><tr><th>Objekt</th><th>Einheiten</th><th>Vermietet</th><th>Leerstand</th><th>Soll-Kaltmiete p.a.</th></tr></thead>
-      <tbody>
-      ${rows.length===0? `<tr><td colspan="5" class="empty">Noch keine Objekte</td></tr>` :
-        rows.map(r=>`<tr class="rowhover">
-          <td><b>${esc(r.o.name)}</b></td><td>${r.anzahlEinheiten}</td><td>${r.vermietet}</td>
-          <td>${r.leer>0?`<span class="badge badge-warn">${r.leer}</span>`:'0'}</td>
-          <td>${fmtMoney(r.sollJahr)}</td>
-        </tr>`).join('')}
-      </tbody>
-      ${rows.length? `<tfoot><tr><td colspan="4" style="text-align:right;font-weight:600;padding:12px 14px;">Gesamt</td><td style="font-weight:600;padding:12px 14px;">${fmtMoney(gesamtSoll)}</td></tr></tfoot>`:''}
-    </table>
-  </div>
-
-  <div class="section-title">Vertragsenden – nächste 12 Monate</div>
-  <div class="card">
-    <table>
-      <thead><tr><th>Mieter</th><th>Einheit</th><th>Vertragsende</th></tr></thead>
-      <tbody>
-      ${auslaufend.length===0? `<tr><td colspan="3" class="empty">Keine Vertragsenden in den nächsten 12 Monaten</td></tr>` :
-        auslaufend.map(v=>`<tr class="rowhover">
-          <td>${esc(mieterName(v.mieter_id))}</td><td>${esc(einheitLabel(v.einheit_id))}</td><td>${fmtDate(v.ende_datum)}</td>
-        </tr>`).join('')}
-      </tbody>
-    </table>
-  </div>`;
-}
-
-/* ============================================================
    EINSTELLUNGEN
    ============================================================ */
 /* ============================================================
@@ -3705,6 +3666,13 @@ function renderFormulare(){
     <div class="field"><label>Mietverhältnis auswählen</label><select id="formular-vertrag">${vertragOpts||'<option value="">Keine aktiven Verträge</option>'}</select></div>
   </div>
   <div class="grid grid-2">
+    <div class="card card-pad" style="border:2px solid var(--primary-dim);">
+      <h3 style="font-size:15px;margin-bottom:6px;">📝 Neuer Mietvertrag</h3>
+      <p class="helptext" style="margin-bottom:12px;">Neuen Vertrag anlegen und direkt im Anschluss digital abschließen: Unterlagen des Mieters hochladen, Vertrag erzeugen, auf dem Tablet/Handy unterschreiben.</p>
+      <button class="btn-primary" onclick="openVertragForm()">+ Neuen Mietvertrag starten</button>
+    </div>
+  </div>
+  <div class="grid grid-2" style="margin-top:16px;">
     <div class="card card-pad">
       <h3 style="font-size:15px;margin-bottom:6px;">Mietbescheinigung</h3>
       <p class="helptext" style="margin-bottom:12px;">Bestätigt Mietverhältnis, Wohnfläche und Mietkosten – z.B. für Ämter, Arbeitgeber oder Bank.</p>
